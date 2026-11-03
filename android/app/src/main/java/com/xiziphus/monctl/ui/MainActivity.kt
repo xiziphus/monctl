@@ -44,7 +44,7 @@ class MainActivity : ComponentActivity() {
                         pairing = null
                     }
                     BackHandler(enabled = cfg.isConfigured, onBack = done)
-                    SettingsScreen(initial = cfg, pairing = pairing, canGoBack = cfg.isConfigured, onDone = done)
+                    SettingsScreen(initial = cfg, pairing = pairing, canGoBack = cfg.isConfigured, onDone = done, ui = ui, vm = vm)
                 } else {
                     MainScreen(ui, vm, onSettings = { editing = true })
                 }

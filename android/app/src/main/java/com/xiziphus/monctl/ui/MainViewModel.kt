@@ -8,11 +8,13 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.xiziphus.monctl.data.Config
 import com.xiziphus.monctl.data.Settings
+import com.xiziphus.monctl.data.UiPrefs
 import com.xiziphus.monctl.net.AirPlayDevice
 import com.xiziphus.monctl.net.AppVersion
 import com.xiziphus.monctl.net.MacState
 import com.xiziphus.monctl.net.Network
 import com.xiziphus.monctl.net.ScreenDisplay
+import com.xiziphus.monctl.net.WatcherConfig
 import com.xiziphus.monctl.net.MonctlClient
 import com.xiziphus.monctl.update.Updater
 import com.xiziphus.monctl.net.Reply
@@ -29,6 +31,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 data class UiState(
     val config: Config? = null,
@@ -55,6 +60,12 @@ data class UiState(
     val thumb: ImageBitmap? = null,
     /** Why there is no preview: LAN-only, no permission, display asleep. */
     val screenNote: String? = null,
+
+    /** The watcher's settings on the Mac; loaded when its sheet opens. */
+    val watcherCfg: WatcherConfig? = null,
+    val prefs: UiPrefs = UiPrefs(),
+    /** A short confirmation ("Saved on the Mac"), cleared after ~2 s. Errors use [message]. */
+    val toast: String? = null,
 ) {
     val screen: ScreenDisplay? get() = displays?.firstOrNull { it.id == screenId }
 }
@@ -80,6 +91,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 _ui.update { it.copy(config = c) }
                 if (changed && c.isConfigured) refresh()
             }
+        }
+        viewModelScope.launch {
+            Settings.prefs(ctx).collect { p -> _ui.update { it.copy(prefs = p) } }
         }
         drain(brightness) { cfg, v -> MonctlClient.set(cfg, "10", v) }
         drain(volume) { cfg, v -> MonctlClient.set(cfg, "62", v) }
@@ -115,6 +129,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             WidgetStore.publish(ctx, r)
             if (m is Reply.Ok) WidgetStore.publishMac(ctx, m.value)
+            if (m is Reply.Ok && _ui.value.watcherCfg == null) loadWatcherConfig()
             if (r is Reply.Ok) {
                 checkForUpdate(cfg)
                 refreshScreen(cfg)
@@ -318,6 +333,106 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun closeAirplayList() = _ui.update { it.copy(devices = null) }
+
+    // --- watcher settings, tiles, app -------------------------------------
+
+    fun loadWatcherConfig() {
+        val cfg = _ui.value.config ?: return
+        viewModelScope.launch {
+            when (val r = MonctlClient.watcherConfig(cfg)) {
+                is Reply.Ok -> _ui.update { it.copy(watcherCfg = r.value) }
+                else -> report(r)
+            }
+        }
+    }
+
+    /**
+     * One setting at a time, shown at once and sent straight away. The reply is
+     * the whole saved config, so a value the Mac refused snaps back.
+     */
+    fun setWatcherConfig(
+        key: String,
+        value: JsonPrimitive,
+        local: (WatcherConfig) -> WatcherConfig,
+        after: (() -> Unit)? = null,
+    ) {
+        val cfg = _ui.value.config ?: return
+        _ui.update { s -> s.copy(watcherCfg = s.watcherCfg?.let(local)) }
+        viewModelScope.launch {
+            when (val r = MonctlClient.setWatcherConfig(cfg, buildJsonObject { put(key, value) })) {
+                is Reply.Ok -> {
+                    _ui.update { it.copy(watcherCfg = r.value) }
+                    if (after != null) after() else toast("Saved on the Mac")
+                }
+                else -> {
+                    report(r)
+                    loadWatcherConfig()
+                }
+            }
+        }
+    }
+
+    /** Every setting back to the watcher script's own defaults, in one request. */
+    fun resetWatcherConfig() {
+        val cfg = _ui.value.config ?: return
+        val d = WatcherConfig()
+        viewModelScope.launch {
+            val body = buildJsonObject {
+                put("mode", d.mode); put("voice", d.voice)
+                put("wifi_nag", d.wifiNag); put("lock_nag", d.lockNag)
+                put("reconnect", d.reconnect); put("heal_after", d.healAfter); put("rescan", d.rescan)
+                put("local_audio", d.localAudio); put("acer_pause", d.acerPause)
+                put("lid_drop", d.lidDrop); put("keep_mtmr", d.keepMtmr)
+            }
+            when (val r = MonctlClient.setWatcherConfig(cfg, body)) {
+                is Reply.Ok -> { _ui.update { it.copy(watcherCfg = r.value) }; toast("Defaults restored") }
+                else -> report(r)
+            }
+        }
+    }
+
+    fun testAnnouncement() {
+        val cfg = _ui.value.config ?: return
+        viewModelScope.launch {
+            val r = MonctlClient.watcherTest(cfg)
+            if (r is Reply.Ok) {
+                toast(if (_ui.value.watcherCfg?.mode == "off") "Announcements are off" else "Playing on the Mac")
+            } else report(r)
+        }
+    }
+
+    fun setHaptics(on: Boolean) = viewModelScope.launch { Settings.setHaptics(ctx, on) }
+
+    fun setTileHidden(id: String, hidden: Boolean) = viewModelScope.launch {
+        val now = _ui.value.prefs.hidden
+        Settings.setHidden(ctx, if (hidden) now + id else now - id)
+    }
+
+    /** Settings' "Check for updates": the same check refresh() runs, with an answer either way. */
+    fun checkForUpdateNow() {
+        val cfg = _ui.value.config ?: return
+        viewModelScope.launch {
+            when (val r = MonctlClient.appVersion(cfg)) {
+                is Reply.Ok -> {
+                    val newer = r.value.takeIf { v -> v.versionCode > Updater.installedCode }
+                    _ui.update { it.copy(update = newer) }
+                    toast(if (newer == null) "Up to date" else "Update ${newer.versionName} is ready")
+                }
+                else -> report(r)
+            }
+        }
+    }
+
+    private var toastJob: kotlinx.coroutines.Job? = null
+
+    private fun toast(text: String) {
+        toastJob?.cancel()
+        _ui.update { it.copy(toast = text) }
+        toastJob = viewModelScope.launch {
+            delay(1900)
+            _ui.update { it.copy(toast = null) }
+        }
+    }
 
     private fun act(block: suspend (Config) -> Reply<*>) {
         val cfg = _ui.value.config ?: return

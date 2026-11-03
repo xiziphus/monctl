@@ -126,6 +126,17 @@ object MonctlClient {
             json.decodeFromString<WatcherState>(it)
         }
 
+    suspend fun watcherConfig(cfg: Config): Reply<WatcherConfig> =
+        call(cfg, get("/api/watcher/config"), retryable = true) { json.decodeFromString<WatcherConfig>(it) }
+
+    /** [changes] is a partial object, e.g. {"mode":"off"}; the reply is the whole saved config. */
+    suspend fun setWatcherConfig(cfg: Config, changes: JsonObject): Reply<WatcherConfig> =
+        call(cfg, post("/api/watcher/config", changes)) { json.decodeFromString<WatcherConfig>(it) }
+
+    /** The Mac plays one announcement the way the watcher would. */
+    suspend fun watcherTest(cfg: Config): Reply<Unit> =
+        call(cfg, post("/api/watcher/test", buildJsonObject { })) { }
+
     suspend fun appVersion(cfg: Config): Reply<AppVersion> =
         call(cfg, get("/api/app/version"), retryable = true) { json.decodeFromString<AppVersion>(it) }
 

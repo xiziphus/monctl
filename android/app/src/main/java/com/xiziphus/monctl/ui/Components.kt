@@ -1,45 +1,41 @@
 package com.xiziphus.monctl.ui
 
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlin.math.roundToInt
 
 /**
- * Square, bordered button. primary = solid foreground (one per row, the
- * action that changes state); otherwise a 1px outline on the background.
+ * Rounded button. primary = lit (the action that changes state); danger with
+ * primary = solid red, for the one-way actions.
  */
 @Composable
 fun VButton(
@@ -49,144 +45,247 @@ fun VButton(
     primary: Boolean = false,
     danger: Boolean = false,
     enabled: Boolean = true,
+    icon: ImageVector? = null,
 ) {
     val c = V.c
+    val bg = when {
+        primary && danger -> c.dangerSolid
+        primary -> c.lit
+        else -> c.pill
+    }
     val fg = when {
-        primary -> c.bg
+        primary && danger -> Color.White
+        primary -> c.onLit
         danger -> c.danger
         else -> c.fg
     }
-    val bg = if (primary) (if (danger) c.danger else c.fg) else c.bg
-    val border = when {
-        primary -> bg
-        danger -> c.danger
-        else -> c.borderStrong
-    }
-    Box(
+    Row(
         modifier
-            .height(36.dp)
-            .alpha(if (enabled) 1f else 0.4f)
-            .background(bg, RectangleShape)
-            .border(1.dp, border, RectangleShape)
+            .height(48.dp)
+            .alpha(if (enabled) 1f else 0.35f)
+            .clip(Radius.button)
+            .background(bg)
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 10.dp),
-        contentAlignment = Alignment.Center,
+            .padding(horizontal = 14.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(text, color = fg, fontSize = 13.sp, fontWeight = FontWeight.Medium, fontFamily = Geist, maxLines = 1)
+        icon?.let { VIcon(it, fg, Modifier.padding(end = 8.dp), size = 16.dp) }
+        Text(text, color = fg, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, fontFamily = Geist, maxLines = 1)
     }
 }
 
-/** Plain text action, for secondary and destructive links. */
+/** Plain text action. */
 @Composable
 fun VLink(text: String, onClick: () -> Unit, danger: Boolean = false, enabled: Boolean = true) {
     Text(
         text,
-        color = if (danger) V.c.danger else V.c.muted,
-        fontSize = 12.sp,
-        fontFamily = Geist,
+        color = if (danger) V.c.danger else V.c.fg,
+        style = LabelMono,
         modifier = Modifier
             .alpha(if (enabled) 1f else 0.4f)
+            .clip(Radius.chip)
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(vertical = 6.dp),
+            .padding(horizontal = 6.dp, vertical = 6.dp),
     )
 }
 
-/**
- * One row of the screen: a mono label (plus an optional readout on the
- * right), its controls, and a hairline under it. No cards, no elevation.
- */
+/** Mono caption above a group of tiles: "MONITOR · KG281K" ... "DDC OK". */
 @Composable
-fun VSection(
-    label: String,
-    value: String? = null,
-    trailing: @Composable () -> Unit = {},
-    content: @Composable ColumnScope.() -> Unit,
-) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            Text(label.uppercase(), style = LabelMono, color = V.c.muted, modifier = Modifier.weight(1f))
-            value?.let { Text(it, style = ValueMono, color = V.c.fg, modifier = Modifier.padding(start = 8.dp)) }
-            trailing()
-        }
-        content()
-    }
-    VDivider()
-}
-
-@Composable
-fun VDivider() = HorizontalDivider(thickness = 1.dp, color = V.c.border)
-
-@Composable
-fun VHint(text: String) {
-    Text(text, fontSize = 12.sp, fontFamily = Geist, color = V.c.subtle, lineHeight = 16.sp)
-}
-
-/** Status dot + mono text, e.g. "● ON". */
-@Composable
-fun VStatus(text: String, color: Color) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(6.dp).background(color, RoundedCornerShape(50)))
-        Text(text.uppercase(), style = LabelMono, color = V.c.fg, modifier = Modifier.padding(start = 6.dp))
+fun VGroupLabel(text: String, right: String? = null) {
+    Row(Modifier.fillMaxWidth().padding(start = 22.dp, end = 22.dp, top = 18.dp, bottom = 8.dp)) {
+        Text(text, style = LabelMono, color = V.c.subtle, modifier = Modifier.weight(1f))
+        right?.let { Text(it, style = LabelMono, color = V.c.subtle) }
     }
 }
 
-/** A bordered message row: errors (danger) or neutral notes. */
+/** Mono caption inside a sheet, with an optional action on the right ("SCAN"). */
+@Composable
+fun VSectionLabel(text: String, action: String? = null, actionEnabled: Boolean = true, onAction: () -> Unit = {}) {
+    Row(
+        Modifier.fillMaxWidth().padding(start = 2.dp, top = 18.dp, bottom = 6.dp).heightIn(min = 26.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text, style = LabelMono, color = V.c.subtle, modifier = Modifier.weight(1f))
+        action?.let { VLink(it, onAction, enabled = actionEnabled) }
+    }
+}
+
+@Composable
+fun VHint(text: String, modifier: Modifier = Modifier) {
+    Text(text, fontSize = 12.sp, fontFamily = Geist, color = V.c.muted, lineHeight = 17.sp, modifier = modifier)
+}
+
+/** Amber note for consequences: "the monitor drops its current signal". */
+@Composable
+fun VWarn(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text, fontSize = 12.5.sp, fontFamily = Geist, color = V.c.warn, lineHeight = 18.sp,
+        modifier = modifier.fillMaxWidth().clip(Radius.chip).background(V.c.warnBg).padding(horizontal = 13.dp, vertical = 11.dp),
+    )
+}
+
+/** A rounded message row: errors (danger) or neutral notes. */
 @Composable
 fun VNotice(text: String, danger: Boolean = true, action: String? = null, onAction: () -> Unit = {}) {
     val c = V.c
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp)
-            .border(1.dp, if (danger) c.danger else c.borderStrong, RectangleShape)
-            .padding(start = 10.dp, end = 4.dp),
+            .padding(horizontal = 18.dp, vertical = 4.dp)
+            .clip(Radius.well)
+            .background(if (danger) c.danger.copy(alpha = 0.13f) else c.tile)
+            .padding(start = 14.dp, end = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text, color = if (danger) c.danger else c.fg, fontSize = 13.sp, fontFamily = Geist,
-            modifier = Modifier.weight(1f).padding(vertical = 8.dp),
+            text, color = if (danger) c.danger else c.fg, fontSize = 12.5.sp, fontFamily = Geist, lineHeight = 18.sp,
+            modifier = Modifier.weight(1f).padding(vertical = 12.dp),
         )
-        action?.let { VLink(it, onAction) }
+        action?.let { VLink(it.uppercase(), onAction) }
     }
 }
 
-/**
- * Hairline track, square 2x18 thumb. Keeps its own position while held, so a
- * refresh landing mid-drag can't yank it back to a stale value.
- */
-@OptIn(ExperimentalMaterial3Api::class)
+/** Header pill: "● ON", "LAN". */
 @Composable
-fun VSlider(cur: Int, max: Int, onChange: (Int) -> Unit, enabled: Boolean = true) {
+fun VPill(text: String, dot: Color? = null, icon: ImageVector? = null) {
     val c = V.c
-    var local by remember { mutableFloatStateOf(cur.toFloat()) }
-    var dragging by remember { mutableStateOf(false) }
-    LaunchedEffect(cur) { if (!dragging) local = cur.toFloat() }
-    val top = max.coerceAtLeast(1).toFloat()
-    Slider(
-        value = local,
-        onValueChange = {
-            dragging = true
-            local = it
-            onChange(it.roundToInt())
-        },
-        onValueChangeFinished = {
-            dragging = false
-            onChange(local.roundToInt())
-        },
-        enabled = enabled,
-        valueRange = 0f..top,
-        modifier = Modifier.height(28.dp),
-        thumb = { Box(Modifier.width(3.dp).height(18.dp).background(c.fg)) },
-        track = {
-            val f = (local / top).coerceIn(0f, 1f)
-            Box(Modifier.fillMaxWidth().height(2.dp).background(c.border)) {
-                Box(Modifier.fillMaxWidth(f).height(2.dp).background(c.fg))
+    Row(
+        Modifier.height(26.dp).clip(Radius.pill).background(c.pill).padding(horizontal = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        dot?.let { Box(Modifier.size(7.dp).clip(Radius.pill).background(it)) }
+        icon?.let { VIcon(it, c.fg, size = 13.dp) }
+        Text(text.uppercase(), style = LabelMono, color = c.fg, modifier = Modifier.padding(start = 6.dp))
+    }
+}
+
+/** Round icon button (settings gear, sheet close). */
+@Composable
+fun VIconButton(icon: ImageVector, onClick: () -> Unit, modifier: Modifier = Modifier, size: Int = 34) {
+    Box(
+        modifier.size(size.dp).clip(Radius.pill).background(V.c.pill).clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) { VIcon(icon, V.c.fg, size = 15.dp) }
+}
+
+/** Rounded group of list rows; separate rows with [VSep]. */
+@Composable
+fun VWell(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
+    Column(modifier.fillMaxWidth().clip(Radius.well).background(V.c.well), content = content)
+}
+
+@Composable
+fun VSep() = Box(Modifier.fillMaxWidth().height(1.dp).background(V.c.line))
+
+/**
+ * One list row: optional leading icon, a title with an optional line under
+ * it, and whatever goes on the right (a switch, a tag, a chevron).
+ */
+@Composable
+fun VItem(
+    title: String,
+    sub: String? = null,
+    icon: ImageVector? = null,
+    titleColor: Color? = null,
+    enabled: Boolean = true,
+    onClick: (() -> Unit)? = null,
+    trailing: @Composable RowScope.() -> Unit = {},
+) {
+    val c = V.c
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 52.dp)
+            .alpha(if (enabled) 1f else 0.4f)
+            .then(if (onClick != null) Modifier.clickable(enabled = enabled, onClick = onClick) else Modifier)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        icon?.let { VIcon(it, titleColor ?: c.fg, Modifier.padding(end = 12.dp)) }
+        Column(Modifier.weight(1f)) {
+            Text(
+                title, fontFamily = Geist, fontSize = 14.sp, color = titleColor ?: c.fg,
+                fontWeight = if (titleColor != null) FontWeight.SemiBold else FontWeight.Normal,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            sub?.let { Text(it, fontFamily = Geist, fontSize = 12.sp, color = c.muted, lineHeight = 16.sp, modifier = Modifier.padding(top = 2.dp)) }
+        }
+        Row(Modifier.padding(start = 10.dp), verticalAlignment = Alignment.CenterVertically, content = trailing)
+    }
+}
+
+/** Mono tag for list rows: "SAVED", "LAST SENT". */
+@Composable
+fun VTag(text: String) = Text(text.uppercase(), style = LabelMono, color = V.c.muted, maxLines = 1)
+
+/** Value readout on the right of a row. */
+@Composable
+fun VValue(text: String) = Text(text, style = ValueMono, color = V.c.fg, maxLines = 1)
+
+@Composable
+fun VChevron() = VIcon(Ic.chevron, V.c.muted, size = 14.dp)
+
+/** Visual switch; the row it sits in handles the tap. */
+@Composable
+fun VSwitch(on: Boolean) {
+    val c = V.c
+    val x by animateDpAsState(if (on) 21.dp else 3.dp, label = "switch")
+    Box(Modifier.width(46.dp).height(28.dp).clip(Radius.pill).background(if (on) c.lit else c.pill)) {
+        Box(
+            Modifier.offset(x = x, y = 3.dp).size(22.dp).clip(Radius.pill)
+                .background(if (on) c.onLit else c.muted),
+        )
+    }
+}
+
+/** Segmented control: one of [options], the selected one raised. */
+@Composable
+fun VSegmented(options: List<String>, selected: String?, onSelect: (String) -> Unit, modifier: Modifier = Modifier, label: (String) -> String = { it }) {
+    val c = V.c
+    Row(modifier.fillMaxWidth().clip(Radius.button).background(c.tile).padding(3.dp), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+        options.forEach { o ->
+            Box(
+                Modifier.weight(1f).height(38.dp).clip(Radius.chip)
+                    .background(if (o == selected) c.raised else Color.Transparent)
+                    .clickable { onSelect(o) },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    label(o), fontFamily = Geist, fontSize = 13.sp,
+                    fontWeight = if (o == selected) FontWeight.SemiBold else FontWeight.Medium,
+                    color = if (o == selected) c.fg else c.muted, maxLines = 1,
+                )
             }
-        },
+        }
+    }
+}
+
+/** − value + */
+@Composable
+fun VStepper(value: String, onMinus: () -> Unit, onPlus: () -> Unit, minusEnabled: Boolean = true, plusEnabled: Boolean = true) {
+    val c = V.c
+    Row(Modifier.clip(Radius.chip).background(c.pill), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(36.dp).alpha(if (minusEnabled) 1f else 0.3f).clickable(enabled = minusEnabled, onClick = onMinus), contentAlignment = Alignment.Center) {
+            Text("−", fontFamily = GeistMono, fontSize = 16.sp, color = c.fg)
+        }
+        Text(value, style = ValueMono, color = c.fg, textAlign = TextAlign.Center, modifier = Modifier.widthIn(min = 64.dp))
+        Box(Modifier.size(36.dp).alpha(if (plusEnabled) 1f else 0.3f).clickable(enabled = plusEnabled, onClick = onPlus), contentAlignment = Alignment.Center) {
+            Text("+", fontFamily = GeistMono, fontSize = 16.sp, color = c.fg)
+        }
+    }
+}
+
+/** Short confirmation at the bottom of the screen. */
+@Composable
+fun VToast(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text, fontFamily = Geist, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = V.c.onLit,
+        modifier = modifier.clip(Radius.pill).background(V.c.lit).padding(horizontal = 18.dp, vertical = 11.dp),
     )
 }
 
-/** Square dialog with V buttons. */
+/** Centred dialog, for the confirmations that need a second yes. */
 @Composable
 fun VDialog(
     title: String,
@@ -203,45 +302,21 @@ fun VDialog(
     val c = V.c
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
-        shape = RectangleShape,
-        containerColor = c.surface,
+        shape = Radius.dialog,
+        containerColor = c.dialog,
         tonalElevation = 0.dp,
-        modifier = Modifier.border(1.dp, c.borderStrong, RectangleShape),
-        title = { Text(title, fontFamily = Geist, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = c.fg) },
+        title = { Text(title, fontFamily = Geist, fontWeight = FontWeight.SemiBold, fontSize = 18.sp, color = c.fg) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(text, fontFamily = Geist, fontSize = 13.sp, color = c.muted, textAlign = TextAlign.Start)
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(text, fontFamily = Geist, fontSize = 13.5.sp, color = c.muted, lineHeight = 20.sp)
                 body?.invoke()
             }
         },
-        confirmButton = { VButton(confirm, onConfirm, primary = true, danger = danger, enabled = !busy && confirmEnabled) },
-        dismissButton = { VButton(dismiss, onDismiss, enabled = !busy) },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                VButton(dismiss, onDismiss, Modifier.weight(1f), enabled = !busy)
+                VButton(confirm, onConfirm, Modifier.weight(1f), primary = true, danger = danger, enabled = !busy && confirmEnabled)
+            }
+        },
     )
-}
-
-/** A tappable list row: name on the left, a mono tag (✓, CURRENT) on the right. */
-@Composable
-fun VRow(text: String, tag: String? = null, enabled: Boolean = true, onClick: () -> Unit) {
-    val c = V.c
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .border(1.dp, c.border, RectangleShape)
-            .alpha(if (enabled) 1f else 0.4f)
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 9.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(text, fontFamily = Geist, fontSize = 13.sp, color = c.fg, maxLines = 1, modifier = Modifier.weight(1f))
-        tag?.let { Text(it, style = LabelMono, color = c.muted, modifier = Modifier.padding(start = 8.dp)) }
-    }
-}
-
-/** Label / value pair on one line, for readouts. */
-@Composable
-fun VReadout(label: String, value: String) {
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-        Text(label.uppercase(), style = LabelMono, color = V.c.subtle, modifier = Modifier.width(72.dp))
-        Text(value, style = ValueMono, color = V.c.fg, maxLines = 1, modifier = Modifier.weight(1f))
-    }
 }

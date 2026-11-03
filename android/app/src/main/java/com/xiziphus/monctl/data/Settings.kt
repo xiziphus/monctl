@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.xiziphus.monctl.net.MonctlClient
 import kotlinx.coroutines.flow.Flow
@@ -31,6 +32,13 @@ data class Config(
         get() = token.isNotBlank() && (lanUrl.isNotBlank() || tunnelUrl.isNotBlank())
 }
 
+/** How the app looks and feels, not how it connects: changing these never refreshes. */
+data class UiPrefs(
+    val haptics: Boolean = true,
+    /** Tile ids hidden with Settings > Edit tiles (see TileId). */
+    val hidden: Set<String> = emptySet(),
+)
+
 private val Context.settingsStore: DataStore<Preferences> by preferencesDataStore("settings")
 
 object Settings {
@@ -38,6 +46,19 @@ object Settings {
     private val TUNNEL = stringPreferencesKey("tunnel_url")
     private val TOKEN = stringPreferencesKey("token")
     private val BLE = booleanPreferencesKey("ble")
+    private val HAPTICS = booleanPreferencesKey("haptics")
+    private val HIDDEN = stringSetPreferencesKey("hidden_tiles")
+
+    fun prefs(context: Context): Flow<UiPrefs> =
+        context.settingsStore.data.map { UiPrefs(it[HAPTICS] ?: true, it[HIDDEN].orEmpty()) }
+
+    suspend fun setHaptics(context: Context, on: Boolean) {
+        context.settingsStore.edit { it[HAPTICS] = on }
+    }
+
+    suspend fun setHidden(context: Context, hidden: Set<String>) {
+        context.settingsStore.edit { it[HIDDEN] = hidden }
+    }
 
     fun flow(context: Context): Flow<Config> =
         context.settingsStore.data.map {

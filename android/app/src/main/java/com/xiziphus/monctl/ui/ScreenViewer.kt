@@ -56,46 +56,10 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * What the Mac is drawing on one display. Only what the Mac renders: an HDMI
- * source on the Acer is not visible here. LAN-only unless the Mac opts the
- * tunnel in (~/.config/monctl/screen_remote).
+ * A display's name for chips: "Built-in +1" when another display mirrors it.
+ * Only what the Mac renders is visible: an HDMI source on the Acer is not.
  */
-@Composable
-fun ScreenSection(ui: UiState, onPick: (Long) -> Unit, onOpen: () -> Unit) {
-    val c = V.c
-    val list = ui.displays.orEmpty()
-    VSection("Screen", value = ui.screen?.let { "${it.w}×${it.h}" }) {
-        if (list.size > 1) {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                list.forEach { d ->
-                    VButton(label(d), { onPick(d.id) }, Modifier.weight(1f), primary = d.id == ui.screenId)
-                }
-            }
-        }
-        val thumb = ui.thumb
-        val s = ui.screen
-        if (thumb != null && s != null) {
-            Image(
-                thumb,
-                contentDescription = "Screen of ${s.name}",
-                contentScale = ContentScale.Fit,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(if (s.h > 0) s.w.toFloat() / s.h else 16f / 9f)
-                    .border(1.dp, c.border, RectangleShape)
-                    .clickable(onClick = onOpen),
-            )
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Box(Modifier.weight(1f)) { VHint("Tap for live view. Refreshes on pull.") }
-                VButton("Live", onOpen)
-            }
-        } else {
-            VHint(ui.screenNote ?: if (ui.displays == null) "Loading…" else "No preview yet.")
-        }
-    }
-}
-
-private fun label(d: ScreenDisplay) = d.name + if (d.mirroredOn > 0) " +${d.mirroredOn}" else ""
+fun displayLabel(d: ScreenDisplay) = d.name + if (d.mirroredOn > 0) " +${d.mirroredOn}" else ""
 
 /**
  * Full-screen live view: one frame at a time, at most ~1 per second, only
@@ -167,7 +131,7 @@ fun ScreenViewer(cfg: Config, displays: List<ScreenDisplay>, startId: Long, onCl
                 if (displays.size > 1) {
                     displays.forEach { d ->
                         Text(
-                            label(d).uppercase(),
+                            displayLabel(d).uppercase(),
                             style = LabelMono,
                             color = if (d.id == id) Color(0xFFEDEDED) else Color(0xFF6E6E6E),
                             modifier = Modifier.clickable { id = d.id; scale = 1f; offset = Offset.Zero }
@@ -180,7 +144,7 @@ fun ScreenViewer(cfg: Config, displays: List<ScreenDisplay>, startId: Long, onCl
                     modifier = Modifier.clickable(onClick = onClose).padding(horizontal = 14.dp, vertical = 10.dp),
                 )
             }
-            Box(Modifier.fillMaxWidth().height(1.dp).background(c.border))
+            Box(Modifier.fillMaxWidth().height(1.dp).background(c.line))
             Box(
                 Modifier
                     .fillMaxSize()

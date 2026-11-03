@@ -255,6 +255,34 @@ used, because they rewrite `items.json` and restart MTMR. `airplay_pick.sh` and
   warns, then looks for the Mac again on whichever route answers. There is
   deliberately no Wi-Fi Off, as on the Touch Bar.
 - The widget's large size adds a `MAC 80% ⚡ · <SSID>` line.
+- `/api/mac` also reports the current sound output (`output`, from Homebrew
+  `SwitchAudioSource`) and whether an AirPlay display is online
+  (`airplay.connected`). The watcher's status line can't say that while it is
+  paused.
+
+**Layout.** The app is a control-centre grid (`ui/Tiles.kt`): a monitor group,
+a Mac group and the screen preview. Tiles that switch something (power, mute,
+watcher) do it on tap. Their › corner, or a long-press, opens a bottom sheet
+(`ui/Sheets.kt`). Tiles that need a choice (input, Wi-Fi, AirPlay, battery)
+open their sheet on tap. Sliders are tall tiles. Dragging moves the value by
+how far the finger travels, from wherever it was, so there is no thumb to find
+and overshooting stops at the end. A tap opens fine control (−10/−1/+1/+10 and
+presets). Switching input is confirmed inside its sheet (pick, then "Switch
+to …"). Only "Power off completely" and joining a Wi-Fi network get a dialog.
+Settings → Edit tiles hides the screen preview, watcher, Mac mute and lid
+tiles. Haptic ticks every 10 steps can be turned off.
+
+**Watcher settings.** `GET/POST /api/watcher/config` read and change
+`~/.config/monctl/watcher.conf`. The keys are announcement mode
+(spoken/sounds/off), voice, the "Wi-Fi still down" and "still locked" repeat
+intervals, whether alerts move sound to the Mac's speakers, pausing while the
+Acer is plugged in, dropping AirPlay when the lid closes, keeping MTMR alive,
+and the reconnect/rediscover/rescan timings. `POST /api/watcher/test` plays one
+announcement with the saved settings. The file is `KEY=value` lines.
+`~/bin/airplay_cue.sh`, sourced by `airplay_watch.sh` and `airplay_toggle.sh`,
+parses it against an allow-list rather than sourcing it, and rereads it every
+loop, so a change applies within one 5 s tick. The server validates every
+value too: voices must be ones `say -v ?` lists, and numbers have ranges.
 
 **Screen preview.** `GET /api/screen/displays` lists the displays the server
 can capture. Mirrored displays (the AirPlay Pad mirroring the built-in) are

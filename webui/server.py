@@ -780,12 +780,23 @@ def _read1(path):
         return None
 
 
+def airplay_connected():
+    """True when an AirPlay display (vendor 'aapl') is online, mirrored or not.
+    The status line can't say this: while paused it only says "paused"."""
+    ids = (ctypes.c_uint32 * 16)()
+    n = ctypes.c_uint32(0)
+    if _cg.CGGetOnlineDisplayList(16, ids, ctypes.byref(n)) != 0:
+        return None
+    return any(_cg.CGDisplayVendorNumber(ids[i]) == 0x6161706C for i in range(n.value))
+
+
 def airplay_state():
     paused = os.path.exists(WATCH_FLAG)
     return {"status": "⏸ paused" if paused else _read1(AIRPLAY_STATUS),
             "target": _read1(os.path.join(AIRPLAY_SUP, "target_name.txt")),
             "target_mac": _read1(os.path.join(AIRPLAY_SUP, "target_mac.txt")),
-            "paused": paused}
+            "paused": paused,
+            "connected": airplay_connected()}
 
 
 MAC_ADDR = re.compile(r"[0-9a-f]{2}(:[0-9a-f]{2}){5}")

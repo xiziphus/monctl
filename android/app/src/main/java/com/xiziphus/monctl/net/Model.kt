@@ -110,6 +110,8 @@ data class MacState(
     val wifi: WifiState? = null,
     val airplay: AirPlayState? = null,
     val watcher: WatcherState? = null,
+    /** The Mac's current sound output device, e.g. "Xiaomi Pad 5". */
+    val output: String? = null,
 )
 
 @Serializable
@@ -145,6 +147,31 @@ data class AirPlayState(
     val target: String? = null,
     @SerialName("target_mac") val targetMac: String? = null,
     val paused: Boolean = false,
+    /** An AirPlay display is online. status can't say so: paused, it only says "paused". */
+    val connected: Boolean? = null,
+)
+
+/**
+ * GET/POST /api/watcher/config: the watcher's settings, kept on the Mac in
+ * ~/.config/monctl/watcher.conf and reread by the watcher every loop.
+ * Ranges are enforced by the server; [voices] is what `say` offers.
+ */
+@Serializable
+data class WatcherConfig(
+    /** spoken | sounds | off */
+    val mode: String = "spoken",
+    /** "" = the Mac's system voice. */
+    val voice: String = "",
+    @SerialName("wifi_nag") val wifiNag: Int = 30,
+    @SerialName("lock_nag") val lockNag: Int = 60,
+    val reconnect: Int = 15,
+    @SerialName("heal_after") val healAfter: Int = 6,
+    val rescan: Int = 60,
+    @SerialName("local_audio") val localAudio: Boolean = true,
+    @SerialName("acer_pause") val acerPause: Boolean = true,
+    @SerialName("lid_drop") val lidDrop: Boolean = true,
+    @SerialName("keep_mtmr") val keepMtmr: Boolean = true,
+    val voices: List<String> = emptyList(),
 )
 
 @Serializable
