@@ -486,6 +486,363 @@ def dim_apply(level):
 
 
 # ---------------------------------------------------------------------------
+# The Mac itself — what the MTMR Touch Bar shows and does
+#
+# Readouts (battery, volume, built-in brightness, Wi-Fi, AirPlay) and the
+# Touch Bar's actions, for the phone. Every action is a fixed script from
+# ~/bin with validated arguments, never a command line built from the request
+# and never whatever happens to be in MTMR's items.json: these routes are
+# reachable through the tunnel.
+#
+# The Touch Bar's own menu scripts (wifi_menu.sh, airplay_menu.sh list) are
+# not reused: they rewrite items.json and restart MTMR. The pieces under them
+# are -- wifihelper scan, airplay_devices.sh, wifi_join.sh -- and
+# airplay_pick.sh / airplay_off.sh skip their MTMR reload when MONCTL_NO_MENU
+# is set.
+# ---------------------------------------------------------------------------
+
+BIN = os.path.expanduser("~/bin")
+WIFIHELPER = "/Applications/WifiHelper.app/Contents/MacOS/wifihelper"
+AIRPLAY_SUP = os.path.expanduser("~/Library/Application Support/AirPlayPad")
+AIRPLAY_STATUS = "/tmp/airplay_status.txt"
+WIFI_IF = "en0"
+MAC_ACTION = threading.Lock()    # one Wi-Fi/AirPlay action at a time
+
+_ds = None
+try:
+    _ds = ctypes.CDLL("/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices")
+    _ds.DisplayServicesGetBrightness.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_float)]
+    _ds.DisplayServicesSetBrightness.argtypes = [ctypes.c_uint32, ctypes.c_float]
+except OSError:
+    pass
+
+
+def _run(args, timeout=10, env=None):
+    """stdout of a fixed command, or None. Never raises."""
+    try:
+        e = None
+        if env:
+            e = dict(os.environ, **env)
+        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=e)
+        return r.stdout if r.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _builtin_display():
+    ids = (ctypes.c_uint32 * 16)()
+    n = ctypes.c_uint32(0)
+    if _cg.CGGetOnlineDisplayList(16, ids, ctypes.byref(n)) != 0:
+        return None
+    for i in range(n.value):
+        if _cg.CGDisplayIsBuiltin(ids[i]):
+            return ids[i]
+    return None      # lid closed: the panel is offline
+
+
+def battery_state():
+    out = _run(["/usr/bin/pmset", "-g", "batt"], timeout=5) or ""
+    m = re.search(r"(\d+)%;\s*([^;]+)", out)
+    if not m:
+        return None
+    status = m.group(2).strip()
+    return {"pct": int(m.group(1)),
+            "ac": "AC Power" in out,
+            "charging": status == "charging",
+            "status": status}
+
+
+def mac_volume():
+    out = _run(["/usr/bin/osascript", "-e", "get volume settings"], timeout=5) or ""
+    vol = re.search(r"output volume:(\d+)", out)
+    muted = re.search(r"output muted:(true|false)", out)
+    # An output macOS can't set (HDMI/DP audio) reports "missing value".
+    return {"volume": int(vol.group(1)) if vol else None,
+            "muted": (muted.group(1) == "true") if muted else None}
+
+
+def mac_volume_set(value=None, muted=None):
+    if value is not None:
+        cmd = f"set volume output volume {int(value)}"
+    else:
+        cmd = f"set volume output muted {'true' if muted else 'false'}"
+    return _run(["/usr/bin/osascript", "-e", cmd], timeout=5) is not None
+
+
+def mac_brightness():
+    d = _builtin_display()
+    if _ds is None or d is None:
+        return None
+    f = ctypes.c_float(-1)
+    if _ds.DisplayServicesGetBrightness(d, ctypes.byref(f)) != 0:
+        return None
+    return round(f.value * 100)
+
+
+def mac_brightness_set(pct):
+    d = _builtin_display()
+    if _ds is None or d is None:
+        return False
+    return _ds.DisplayServicesSetBrightness(d, max(0.0, min(1.0, pct / 100.0))) == 0
+
+
+def _remembered_networks():
+    out = _run(["/usr/sbin/networksetup", "-listpreferredwirelessnetworks", WIFI_IF], timeout=5) or ""
+    return [l.strip() for l in out.splitlines()[1:] if l.strip()]
+
+
+def wifi_state():
+    power = _run(["/usr/sbin/networksetup", "-getairportpower", WIFI_IF], timeout=5) or ""
+    on = power.strip().endswith("On")
+    ssid = None
+    if on and os.access(WIFIHELPER, os.X_OK):
+        # WifiHelper holds the Location grant that un-redacts the SSID.
+        ssid = ((_run([WIFIHELPER, "current"], timeout=5) or "").strip().splitlines() or [None])[0]
+    route = _run(["/sbin/route", "-n", "get", "default"], timeout=5) or ""
+    m = re.search(r"interface:\s*(\S+)", route)
+    iface = m.group(1) if m else None
+    return {"power": on, "ssid": ssid or None,
+            "wired": bool(iface and iface != WIFI_IF and not iface.startswith("utun")),
+            "online": iface is not None}
+
+
+def wifi_on():
+    return _run(["/bin/bash", os.path.join(BIN, "wifi_on.sh")], timeout=15) is not None
+
+
+def wifi_scan():
+    if not os.access(WIFIHELPER, os.X_OK):
+        return None
+    out = _run([WIFIHELPER, "scan"], timeout=20)
+    if out is None:
+        return None
+    remembered = set(_remembered_networks())
+    current = wifi_state()["ssid"]
+    seen, nets = set(), []
+    for name in (l.strip() for l in out.splitlines()):   # strongest first
+        if name and name not in seen:
+            seen.add(name)
+            nets.append({"ssid": name, "remembered": name in remembered,
+                         "current": name == current})
+    return nets
+
+
+def wifi_join(ssid, password=None):
+    """wifi_join.sh pulls a remembered network's password from the keychain.
+    Returns (ok, error)."""
+    args = ["/bin/bash", os.path.join(BIN, "wifi_join.sh"), ssid]
+    if password:
+        args.append(password)
+    with MAC_ACTION:
+        before = os.stat(AIRPLAY_STATUS).st_mtime if os.path.exists(AIRPLAY_STATUS) else 0
+        try:
+            subprocess.run(args, capture_output=True, timeout=45)
+        except subprocess.TimeoutExpired:
+            return False, "join timed out (a keychain prompt on the Mac?)"
+        except OSError as e:
+            return False, str(e)
+    # wifi_join.sh exits 0 either way; on failure it writes this line to the
+    # Touch Bar status file. Checked first, since rejoining the current
+    # network would otherwise look like success.
+    try:
+        if os.stat(AIRPLAY_STATUS).st_mtime > before and "join failed" in (_read1(AIRPLAY_STATUS) or ""):
+            return False, "join failed (wrong password, or out of range)"
+    except OSError:
+        pass
+    for _ in range(10):                    # association lags the helper's exit
+        if wifi_state()["ssid"] == ssid:
+            return True, None
+        time.sleep(0.5)
+    return False, f"not on {ssid} after joining"
+
+
+def _read1(path):
+    try:
+        with open(path) as f:
+            return f.readline().strip() or None
+    except OSError:
+        return None
+
+
+def airplay_state():
+    paused = os.path.exists(WATCH_FLAG)
+    return {"status": "⏸ paused" if paused else _read1(AIRPLAY_STATUS),
+            "target": _read1(os.path.join(AIRPLAY_SUP, "target_name.txt")),
+            "target_mac": _read1(os.path.join(AIRPLAY_SUP, "target_mac.txt")),
+            "paused": paused}
+
+
+MAC_ADDR = re.compile(r"[0-9a-f]{2}(:[0-9a-f]{2}){5}")
+
+
+def airplay_scan():
+    with MAC_ACTION:
+        out = _run(["/bin/bash", os.path.join(BIN, "airplay_devices.sh")], timeout=60)
+    if out is None:
+        return None
+    cur = airplay_state()["target_mac"]
+    devs = []
+    for line in out.splitlines():
+        mac, _, name = line.partition("\t")
+        if MAC_ADDR.fullmatch(mac) and name:
+            devs.append({"mac": mac, "name": name, "current": mac == cur})
+    return devs
+
+
+def airplay_connect(mac, name):
+    import base64
+    b64 = lambda s: base64.b64encode(s.encode()).decode()
+    with MAC_ACTION:
+        return _run(["/bin/bash", os.path.join(BIN, "airplay_pick.sh"), b64(mac), b64(name)],
+                    timeout=30, env={"MONCTL_NO_MENU": "1"}) is not None
+
+
+def airplay_disconnect():
+    with MAC_ACTION:
+        return _run(["/bin/bash", os.path.join(BIN, "airplay_off.sh")],
+                    timeout=30, env={"MONCTL_NO_MENU": "1"}) is not None
+
+
+def mac_snapshot():
+    # Each readout is its own short subprocess; serially they add up to ~2 s.
+    from concurrent.futures import ThreadPoolExecutor
+    parts = {"battery": battery_state, "volume": mac_volume, "brightness": mac_brightness,
+             "lid": lid_state, "wifi": wifi_state, "airplay": airplay_state,
+             "watcher": watcher_state}
+    with ThreadPoolExecutor(len(parts)) as ex:
+        futs = {k: ex.submit(f) for k, f in parts.items()}
+        got = {k: f.result() for k, f in futs.items()}
+    vol = got.pop("volume")
+    return {**got, "volume": vol["volume"], "muted": vol["muted"]}
+
+
+# ---------------------------------------------------------------------------
+# Screen preview
+#
+# A JPEG of one display, for the phone to poll about once a second. Viewing is
+# a background read in the sleeping-bus sense: an asleep display is reported,
+# never woken. Through the tunnel it is refused unless SCREEN_REMOTE_FLAG
+# exists -- the screen is the most private thing this server can hand out.
+#
+# Capture is by global rectangle (screencapture -R), not -D <n>: the -D index
+# reshuffles whenever the AirPlay display comes and goes. Mirrored displays
+# (the Pad mirrors the built-in) are folded into the display they mirror.
+# Needs Screen Recording permission for the process running this server.
+# ---------------------------------------------------------------------------
+
+SCREEN_REMOTE_FLAG = os.path.expanduser("~/.config/monctl/screen_remote")
+SCREEN = threading.Lock()
+SCREEN_CACHE = {"key": None, "t": 0.0, "jpg": None}
+SCREEN_ASKED = {"done": False}
+
+
+class _CGPoint(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]
+
+
+class _CGSize(ctypes.Structure):
+    _fields_ = [("w", ctypes.c_double), ("h", ctypes.c_double)]
+
+
+class _CGRect(ctypes.Structure):
+    _fields_ = [("origin", _CGPoint), ("size", _CGSize)]
+
+
+_cg.CGGetActiveDisplayList.argtypes = _cg.CGGetOnlineDisplayList.argtypes
+_cg.CGDisplayBounds.argtypes = [ctypes.c_uint32]
+_cg.CGDisplayBounds.restype = _CGRect
+_cg.CGDisplayMirrorsDisplay.argtypes = [ctypes.c_uint32]
+_cg.CGDisplayMirrorsDisplay.restype = ctypes.c_uint32
+_cg.CGDisplayIsAsleep.argtypes = [ctypes.c_uint32]
+_cg.CGDisplayVendorNumber.argtypes = [ctypes.c_uint32]
+_cg.CGDisplayVendorNumber.restype = ctypes.c_uint32
+_cg.CGDisplayIsMain.argtypes = [ctypes.c_uint32]
+_cg.CGPreflightScreenCaptureAccess.restype = ctypes.c_bool
+_cg.CGRequestScreenCaptureAccess.restype = ctypes.c_bool
+
+VENDORS = {0x0472: "Acer", 0x0610: "Apple", 0x6161706C: "AirPlay"}
+
+
+def screen_displays():
+    ids = (ctypes.c_uint32 * 16)()
+    n = ctypes.c_uint32(0)
+    if _cg.CGGetActiveDisplayList(16, ids, ctypes.byref(n)) != 0:
+        return []
+    all_ids = [ids[i] for i in range(n.value)]
+    # A display in a hardware mirror set is online but not active, so look for
+    # mirrors among the online ones.
+    on = (ctypes.c_uint32 * 16)()
+    m_n = ctypes.c_uint32(0)
+    online = [on[i] for i in range(m_n.value)] \
+        if _cg.CGGetOnlineDisplayList(16, on, ctypes.byref(m_n)) == 0 else all_ids
+    mirrors = {}
+    for d in online:
+        m = _cg.CGDisplayMirrorsDisplay(d)
+        if m:
+            mirrors.setdefault(m, []).append(d)
+    out = []
+    for d in all_ids:
+        if _cg.CGDisplayMirrorsDisplay(d):
+            continue
+        b = _cg.CGDisplayBounds(d)
+        # When the built-in mirrors an AirPlay display, the AirPlay one is the
+        # master of the set -- but what it shows is the built-in's picture.
+        group = [d] + mirrors.get(d, [])
+        builtin = any(_cg.CGDisplayIsBuiltin(x) for x in group)
+        name = "Built-in" if builtin else VENDORS.get(_cg.CGDisplayVendorNumber(d), "Display")
+        out.append({"id": d, "name": name, "builtin": builtin,
+                    "main": bool(_cg.CGDisplayIsMain(d)),
+                    "mirrored_on": len(mirrors.get(d, [])),
+                    "asleep": bool(_cg.CGDisplayIsAsleep(d)),
+                    "x": int(b.origin.x), "y": int(b.origin.y),
+                    "w": int(b.size.w), "h": int(b.size.h)})
+    return out
+
+
+def screen_capture(display_id, width):
+    """(status, jpeg bytes or error dict)."""
+    if not _cg.CGPreflightScreenCaptureAccess():
+        if not SCREEN_ASKED["done"]:
+            SCREEN_ASKED["done"] = True     # macOS shows its prompt once per process
+            _cg.CGRequestScreenCaptureAccess()
+        return 403, {"error": "Screen Recording permission is off for the monctl server "
+                              "(System Settings > Privacy & Security > Screen & System Audio "
+                              "Recording: allow python3, then restart the server)",
+                     "permission": False}
+    disp = next((d for d in screen_displays() if d["id"] == display_id), None)
+    if disp is None:
+        return 404, {"error": "no such display"}
+    st = display_power_state()
+    if disp["asleep"] or (st is not None and st < 4):
+        return 409, {"error": "display asleep", "asleep": True}
+    key = (display_id, width)
+    with SCREEN:
+        if SCREEN_CACHE["key"] == key and time.monotonic() - SCREEN_CACHE["t"] < 0.5:
+            return 200, SCREEN_CACHE["jpg"]
+        tmp = f"/tmp/monctl-screen-{os.getpid()}"
+        rect = f"{disp['x']},{disp['y']},{disp['w']},{disp['h']}"
+        try:
+            if _run(["/usr/sbin/screencapture", "-x", "-R", rect, "-t", "jpg", tmp + "-full.jpg"],
+                    timeout=10) is None:
+                return 502, {"error": "capture failed"}
+            if _run(["/usr/bin/sips", "-Z", str(width), "-s", "formatOptions", "60",
+                     tmp + "-full.jpg", "--out", tmp + ".jpg"], timeout=10) is None:
+                return 502, {"error": "resize failed"}
+            with open(tmp + ".jpg", "rb") as f:
+                jpg = f.read()
+        except OSError as e:
+            return 502, {"error": str(e)}
+        finally:
+            for p in (tmp + "-full.jpg", tmp + ".jpg"):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+        SCREEN_CACHE.update(key=key, t=time.monotonic(), jpg=jpg)
+        return 200, jpg
+
+
+# ---------------------------------------------------------------------------
 # Start at login
 #
 # Uses `launchctl enable/disable` rather than load/unload on purpose: disable
@@ -849,6 +1206,27 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/watcher":
             return self._send(200, watcher_state())
 
+        if u.path == "/api/mac":
+            return self._send(200, mac_snapshot())
+
+        if u.path.startswith("/api/screen"):
+            if self._via_tunnel() and not os.path.exists(SCREEN_REMOTE_FLAG):
+                return self._send(403, {"error": "screen preview is LAN-only", "lan_only": True})
+            if u.path == "/api/screen/displays":
+                return self._send(200, {"displays": screen_displays(),
+                                        "permission": bool(_cg.CGPreflightScreenCaptureAccess())})
+            if u.path == "/api/screen":
+                q = parse_qs(u.query)
+                try:
+                    d = int(q.get("d", ["0"])[0])
+                    w = max(320, min(3840, int(q.get("w", ["1280"])[0])))
+                except ValueError:
+                    return self._send(400, {"error": "d and w must be integers"})
+                status, body = screen_capture(d, w)
+                if status == 200:
+                    return self._send(200, body, "image/jpeg")
+                return self._send(status, body)
+
         if u.path == "/api/display":
             st = display_power_state()
             return self._send(200, {"state": st, "asleep": (st is not None and st < 4)})
@@ -975,6 +1353,70 @@ class Handler(BaseHTTPRequestHandler):
                 except OSError:
                     pass
 
+    def _mac_post(self, path, body):
+        """The Touch Bar's actions. Arguments are type-checked here and handed
+        to fixed scripts as argv, never through a shell string."""
+        def level(key):
+            v = body.get(key)
+            return v if isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 100 else None
+
+        if path == "/api/mac/volume":
+            if level("value") is not None:
+                ok = mac_volume_set(value=body["value"])
+            elif isinstance(body.get("muted"), bool):
+                ok = mac_volume_set(muted=body["muted"])
+            else:
+                return self._send(400, {"error": "value 0..100 or muted bool"})
+            return self._send(200 if ok else 502, {"ok": ok, **mac_volume()})
+
+        if path == "/api/mac/brightness":
+            if level("value") is None:
+                return self._send(400, {"error": "value must be 0..100"})
+            ok = mac_brightness_set(body["value"])
+            return self._send(200 if ok else 502,
+                              {"ok": ok, "brightness": mac_brightness(),
+                               "error": None if ok else "built-in display unavailable (lid closed?)"})
+
+        if path == "/api/wifi/on":
+            ok = wifi_on()
+            return self._send(200 if ok else 502, {"ok": ok, "wifi": wifi_state()})
+
+        if path == "/api/wifi/scan":
+            nets = wifi_scan()
+            if nets is None:
+                return self._send(502, {"error": "scan failed (is Wi-Fi on?)"})
+            return self._send(200, {"networks": nets})
+
+        if path == "/api/wifi/join":
+            ssid, pw = body.get("ssid"), body.get("password")
+            if not isinstance(ssid, str) or not 0 < len(ssid.encode()) <= 32 \
+                    or any(ch in ssid for ch in "\0\n\r"):
+                return self._send(400, {"error": "bad ssid"})
+            if pw is not None and (not isinstance(pw, str) or not 8 <= len(pw) <= 63
+                                   or any(ch in pw for ch in "\0\n\r")):
+                return self._send(400, {"error": "password must be 8-63 characters"})
+            ok, err = wifi_join(ssid, pw or None)
+            return self._send(200 if ok else 502, {"ok": ok, "error": err, "wifi": wifi_state()})
+
+        if path == "/api/airplay/scan":
+            devs = airplay_scan()
+            if devs is None:
+                return self._send(502, {"error": "scan failed"})
+            return self._send(200, {"devices": devs})
+
+        if path == "/api/airplay/connect":
+            mac, name = str(body.get("mac", "")).lower(), body.get("name")
+            if not MAC_ADDR.fullmatch(mac) or not isinstance(name, str) or not 0 < len(name) <= 80:
+                return self._send(400, {"error": "mac and name required"})
+            ok = airplay_connect(mac, name)
+            return self._send(200 if ok else 502, {"ok": ok, "airplay": airplay_state()})
+
+        if path == "/api/airplay/disconnect":
+            ok = airplay_disconnect()
+            return self._send(200 if ok else 502, {"ok": ok, "airplay": airplay_state()})
+
+        return self._send(404, {"error": "not found"})
+
     def do_POST(self):
         u = urlparse(self.path)
 
@@ -998,6 +1440,13 @@ class Handler(BaseHTTPRequestHandler):
             if v is None:
                 return self._send(502, {"error": "monitor did not answer"})
             return self._send(200, {"ok": True, "code": code, **v})
+
+        if u.path.startswith(("/api/mac/", "/api/wifi/", "/api/airplay/")):
+            try:
+                body = self._body()
+            except (ValueError, json.JSONDecodeError):
+                return self._send(400, {"error": "bad json"})
+            return self._mac_post(u.path, body)
 
         # The browser reports its own errors here so client-side failures are
         # visible in the terminal instead of only in devtools.
