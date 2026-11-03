@@ -111,7 +111,7 @@ private fun Content(context: Context, st: WidgetStore.State) {
         }
 
         Row(GlanceModifier.fillMaxWidth()) {
-            Pill(if (s?.asleep == true) "⏻ Wake" else "⏻ Sleep", actionRunCallback<PowerAction>(), emphasis = true,
+            Pill(if (s?.asleep == true) "⏻ On" else "⏻ Off", actionRunCallback<PowerAction>(), emphasis = true,
                 modifier = GlanceModifier.defaultWeight())
             Gap()
             Pill("☀−", nudge("10", -10), GlanceModifier.defaultWeight())
@@ -154,7 +154,7 @@ private fun summary(st: WidgetStore.State): String {
     val s: Snapshot = st.snapshot ?: return "Tap ⟳ to load"
     val where = if (st.route == Route.TUNNEL) " ☁" else ""
     return when {
-        s.asleep -> "Display asleep$where"
+        s.asleep -> "Monitor off$where"
         !s.reachable -> "Monitor not answering$where"
         else -> listOfNotNull(
             s.currentInputName,

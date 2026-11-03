@@ -175,8 +175,8 @@ Files: `webui/server.py` (stdlib only) and `app/` (the React build).
 
 ## Android companion
 
-`android/` is a Kotlin/Compose app with a home-screen widget: sleep/wake,
-brightness, volume, mute, input (DisplayPort, HDMI 1, HDMI 2), and start/stop
+`android/` is a Kotlin/Compose app with a home-screen widget:
+on/off, brightness, volume, mute, input (DisplayPort, HDMI 1, HDMI 2), and start/stop
 for the AirPlay-display watcher. It talks to
 `server.py` on the LAN when the phone is on home Wi-Fi and through a
 Cloudflare tunnel otherwise.
@@ -224,11 +224,13 @@ idempotent, unlike the body-less toggle the other front ends use.
 
 **Limits:**
 
-- **Power is sleep/wake only.** `pmset displaysleepnow` / `caffeinate -u` is
-  the one reversible pair. VCP `D6=4` ("off") and `D6=5` ("hardoff") kill the
-  panel's DDC bus, so nothing can turn it back on remotely; the app never sends
-  them. If the monitor was switched off at its button, the app says "not
-  answering DDC".
+- **On/Off is display wake/sleep.** Off is `pmset displaysleepnow`: the Mac
+  stops sending a picture and the monitor drops to standby. On is
+  `caffeinate -u`. That is the only off that can be undone remotely. The app
+  also has **Power off completely** (VCP `D6=5`, LED dark) behind a
+  confirmation; it kills the DDC bus, so only the physical button turns the
+  monitor back on. If the monitor isn't answering, the app says so, but its
+  controls stay visible and each tap still tries.
 - **The Mac has to be awake.** On AC this Mac is set to `sleep 0`, so the
   display can sleep while the server stays reachable. On battery, remote
   control stops when the Mac sleeps.

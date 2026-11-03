@@ -94,10 +94,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         r
     }
 
-    /** Sleep/wake only. VCP "off" and "hardoff" cannot be undone remotely, so the app never sends them. */
-    fun power(wake: Boolean) = act { cfg ->
-        MonctlClient.display(cfg, if (wake) "wake" else "sleep")
+    /**
+     * On/Off = display wake/sleep: the Mac stops (or resumes) sending a
+     * picture and the monitor drops to standby. The only off that On can undo
+     * remotely -- VCP D6 off kills the monitor's DDC bus with it.
+     */
+    fun power(on: Boolean) = act { cfg ->
+        MonctlClient.display(cfg, if (on) "wake" else "sleep")
     }
+
+    /** VCP D6=5: power LED off. One-way; only the physical button undoes it. Confirmed in the UI. */
+    fun hardOff() = act { cfg -> MonctlClient.display(cfg, "hardoff") }
 
     fun setInput(code: Int) = act { cfg ->
         val r = MonctlClient.set(cfg, "60", code)

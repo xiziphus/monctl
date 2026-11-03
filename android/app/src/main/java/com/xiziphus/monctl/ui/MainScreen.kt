@@ -49,6 +49,7 @@ import kotlin.math.roundToInt
 @Composable
 fun MainScreen(ui: UiState, vm: MainViewModel, onSettings: () -> Unit) {
     var confirm by remember { mutableStateOf<InputOption?>(null) }
+    var confirmHardOff by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -73,21 +74,21 @@ fun MainScreen(ui: UiState, vm: MainViewModel, onSettings: () -> Unit) {
                 if (ui.working) LinearProgressIndicator(Modifier.fillMaxWidth())
                 ui.message?.let { Notice(it, onDismiss = vm::dismissMessage) }
 
-                val s = ui.snapshot
-                PowerCard(s, enabled = !ui.working, onPower = vm::power)
-                when {
-                    s == null -> Unit
-                    s.reachable -> {
-                        s.brightness?.let { LevelCard("Brightness", it, onChange = vm::setBrightness) }
-                        s.volume?.let { VolumeCard(it, s.muted == true, vm::setVolume, vm::toggleMute, !ui.working) }
-                        InputCard(s, enabled = !ui.working, onPick = { confirm = it })
-                    }
-                    s.asleep -> Hint("The display is asleep. Wake it to change brightness, volume or input.")
-                    else -> Hint(
-                        "The monitor isn't answering DDC. If it was switched off at its power button " +
-                            "(or with 'off' / 'hardoff' from the web panel), only the physical button turns it back on."
+                // Every control is always shown and always usable. When the
+                // monitor isn't answering, a tap still tries (writes may wake
+                // it) and the failure is reported, instead of hiding controls.
+                val s = ui.snapshot ?: Snapshot()
+                val on = !ui.working
+                if (ui.snapshot != null && !s.asleep && !s.reachable) {
+                    Hint(
+                        "The monitor isn't answering. If it was switched off at its power button or with " +
+                            "'Power off completely', press the monitor's power button: nothing can turn it on remotely after that."
                     )
                 }
+                PowerCard(s, enabled = on, onPower = vm::power, onHardOff = { confirmHardOff = true })
+                InputCard(s, enabled = on, onPick = { confirm = it })
+                LevelCard("Brightness", s.brightness, onChange = vm::setBrightness)
+                VolumeCard(s.volume, s.muted == true, vm::setVolume, vm::toggleMute, on)
                 // On the Mac, not the monitor: shown whatever state the panel is in.
                 s?.watcher?.takeIf { it.installed }?.let { WatcherCard(it, enabled = !ui.working, onSet = vm::setWatcher) }
             }
@@ -105,6 +106,23 @@ fun MainScreen(ui: UiState, vm: MainViewModel, onSettings: () -> Unit) {
             dismissButton = { TextButton(onClick = { confirm = null }) { Text("Cancel") } },
         )
     }
+
+    if (confirmHardOff) {
+        AlertDialog(
+            onDismissRequest = { confirmHardOff = false },
+            title = { Text("Power off completely?") },
+            text = {
+                Text(
+                    "The monitor shuts down fully (power LED off). It can't be turned back on from the phone: " +
+                        "only its physical power button brings it back. Use Off for a remote-reversible off."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { vm.hardOff(); confirmHardOff = false }) { Text("Power off") }
+            },
+            dismissButton = { TextButton(onClick = { confirmHardOff = false }) { Text("Cancel") } },
+        )
+    }
 }
 
 @Composable
@@ -112,9 +130,9 @@ private fun StatusRow(ui: UiState) {
     val s = ui.snapshot
     val power = when {
         s == null -> "Unknown"
-        s.asleep -> "Asleep"
-        !s.reachable -> "No DDC"
-        else -> "Awake"
+        s.asleep -> "Off"
+        !s.reachable -> "Not answering"
+        else -> "On"
     }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         AssistChip(onClick = {}, label = { Text(power) })
@@ -124,31 +142,37 @@ private fun StatusRow(ui: UiState) {
 }
 
 @Composable
-private fun PowerCard(s: Snapshot?, enabled: Boolean, onPower: (Boolean) -> Unit) {
-    SectionCard("Display") {
+private fun PowerCard(s: Snapshot, enabled: Boolean, onPower: (Boolean) -> Unit, onHardOff: () -> Unit) {
+    SectionCard("Power") {
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
             // The button that would change the state is the filled one.
-            val asleep = s?.asleep == true
-            if (asleep) {
-                OutlinedButton(onClick = { onPower(false) }, enabled = enabled, modifier = Modifier.weight(1f)) { Text("Sleep") }
-                Button(onClick = { onPower(true) }, enabled = enabled, modifier = Modifier.weight(1f)) { Text("Wake") }
+            if (s.asleep) {
+                Button(onClick = { onPower(true) }, enabled = enabled, modifier = Modifier.weight(1f)) { Text("On") }
+                OutlinedButton(onClick = { onPower(false) }, enabled = enabled, modifier = Modifier.weight(1f)) { Text("Off") }
             } else {
-                Button(onClick = { onPower(false) }, enabled = enabled, modifier = Modifier.weight(1f)) { Text("Sleep") }
-                OutlinedButton(onClick = { onPower(true) }, enabled = enabled, modifier = Modifier.weight(1f)) { Text("Wake") }
+                OutlinedButton(onClick = { onPower(true) }, enabled = enabled, modifier = Modifier.weight(1f)) { Text("On") }
+                Button(onClick = { onPower(false) }, enabled = enabled, modifier = Modifier.weight(1f)) { Text("Off") }
             }
         }
+        Text(
+            "Off puts the monitor in standby (the Mac stops sending a picture), so On works from anywhere.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        TextButton(onClick = onHardOff, enabled = enabled) { Text("Power off completely…") }
+    }
+}
+
+/** [level] is null when the monitor didn't report it; the slider still works from a midpoint. */
+@Composable
+private fun LevelCard(title: String, level: Level?, onChange: (Int) -> Unit, trailing: @Composable () -> Unit = {}) {
+    SectionCard(title, value = level?.cur?.toString() ?: "—", trailing = trailing) {
+        LevelSlider(level ?: Level(50, 100), onChange)
     }
 }
 
 @Composable
-private fun LevelCard(title: String, level: Level, onChange: (Int) -> Unit, trailing: @Composable () -> Unit = {}) {
-    SectionCard(title, value = "${level.cur}", trailing = trailing) {
-        LevelSlider(level, onChange)
-    }
-}
-
-@Composable
-private fun VolumeCard(level: Level, muted: Boolean, onChange: (Int) -> Unit, onMute: () -> Unit, enabled: Boolean) {
+private fun VolumeCard(level: Level?, muted: Boolean, onChange: (Int) -> Unit, onMute: () -> Unit, enabled: Boolean) {
     LevelCard("Volume", level, onChange) {
         FilterChip(selected = muted, onClick = onMute, enabled = enabled, label = { Text(if (muted) "Muted" else "Mute") })
     }
