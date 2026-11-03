@@ -359,7 +359,7 @@ def write_one(code, value):
 # max=1 whatever input is showing -- the query arrives over the DP cable. So
 # the only input knowledge there is, is the last one *we* switched to (web UI,
 # cycler, Android app). OSD-button or auto-source changes are invisible.
-LAST_INPUT = {"code": None, "at": None}
+LAST_INPUT: dict = {"code": None, "at": None}
 
 
 # ---------------------------------------------------------------------------
