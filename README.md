@@ -70,7 +70,7 @@ two big input buttons side by side, **HDMI 1** and **DisplayPort** (the active o
 is lit; **Other input ▸ HDMI 2** below them), brightness and
 volume sliders, a mute toggle, and **Open Web UI** (⌘W).
 
-The web item is self-managing: it TCP-probes port 8765 each time the menu opens
+The web item is self-managing: it TCP-probes port 8770 each time the menu opens
 and relabels itself. If a server is already up — started from a terminal or by a
 previous click — it just opens the browser. Otherwise it reads **Start & open
 Web UI**, launches `webui/server.py`, waits for the port to accept, then opens
@@ -101,7 +101,7 @@ Then assign a key in the shortcut's settings. One shortcut each for `+10` / `-10
 ## Web UI
 
 ```bash
-monctl web            # http://127.0.0.1:8765, opens your browser
+monctl web            # http://127.0.0.1:8770, opens your browser
 monctl web 9000       # different port
 ```
 

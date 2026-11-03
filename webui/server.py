@@ -2,10 +2,11 @@
 """
 monctl-web — local control panel replicating the monitor's OSD over DDC/CI.
 
-Binds to 127.0.0.1 only. It drives display hardware, so it is deliberately not
-reachable from the network.
+Binds to 127.0.0.1 by default. --lan exposes it to the LAN, and a Cloudflare
+tunnel may front it for the Android companion. Both are guarded by a token
+(~/.config/monctl/token); only direct loopback requests skip it.
 
-    python3 ~/monctl/webui/server.py [--port 8765]
+    python3 ~/monctl/webui/server.py [--port 8770]
 """
 
 import argparse
@@ -184,13 +185,17 @@ def probe(args, timeout=90, revive=False):
             return ""
 
 
-def read_many(codes):
-    """Batch read. Returns {code: {'cur': int, 'max': int}} — absent if unsupported."""
+def read_many(codes, revive=False):
+    """Batch read. Returns {code: {'cur': int, 'max': int}} — absent if unsupported.
+
+    revive follows probe(): only a read that is the first half of a user's
+    write (a nudge) may pass it.
+    """
     codes = [c for c in codes if re.fullmatch(r"[0-9A-Fa-f]{2}", c)]
     if not codes:
         return {}
     out = {}
-    for line in probe(["many"] + codes).splitlines():
+    for line in probe(["many"] + codes, revive=revive).splitlines():
         parts = line.split()
         if len(parts) == 3 and parts[1] != "-":
             try:
@@ -318,6 +323,61 @@ def write_one(code, value):
     # A write is always someone pressing something, so it may wake the panel to
     # be delivered. Reads must not -- see probe().
     return "<-" in probe(["set", code, str(value)], timeout=20, revive=True)
+
+
+# ---------------------------------------------------------------------------
+# Remote (Android app and widget)
+#
+# One request per screen refresh and one per button press. The phone may be on
+# the tunnel with a few hundred ms of latency, so the snapshot and relative
+# steps are assembled here instead of by chaining /api/display, /api/state and
+# /api/set from the client.
+# ---------------------------------------------------------------------------
+
+# The OSD catalog lists HDMI only for the web panel; the phone also offers
+# DisplayPort, which is the Mac itself, so "back to the Mac" is one tap.
+REMOTE_INPUTS = [[15, "DisplayPort"], [17, "HDMI 1"], [18, "HDMI 2"]]
+NUDGEABLE = ("10", "62")
+# Read-modify-write must not interleave: two quick widget taps would both read
+# 50 and both write 60.
+NUDGE = threading.Lock()
+
+
+def remote_snapshot():
+    """Display power plus the four controls the phone shows.
+
+    A background read: never revives. When macOS reports the display asleep the
+    DDC bus is gone with it, so the read is skipped rather than left to fail.
+    reachable=False with asleep=False means the Mac thinks the panel is on but
+    DDC is dead -- what 'off'/'hardoff' or the physical button leave behind.
+    """
+    st = display_power_state()
+    asleep = st is not None and st < 4
+    out = {"asleep": asleep, "reachable": False, "inputs": REMOTE_INPUTS,
+           "brightness": None, "volume": None, "muted": None, "input": None}
+    if asleep:
+        return out
+    v = read_many(["10", "62", "8D", "60"])
+    out["reachable"] = bool(v)
+    out["brightness"] = v.get("10")
+    out["volume"] = v.get("62")
+    if "8D" in v:
+        out["muted"] = v["8D"]["cur"] == 1
+    if "60" in v:
+        out["input"] = v["60"]["cur"]
+    return out
+
+
+def nudge(code, delta):
+    """Step a fader relative to its live value. None = the panel did not answer."""
+    with NUDGE:
+        v = read_many([code], revive=True).get(code)
+        if not v:
+            return None
+        new = max(0, min(v["max"], v["cur"] + delta))
+        if new != v["cur"] and not write_one(code, new):
+            return None
+        return {"cur": new, "max": v["max"]}
 
 
 # ---------------------------------------------------------------------------
@@ -580,11 +640,65 @@ def capabilities():
 # ---------------------------------------------------------------------------
 
 
+# Failed-token throttle, keyed by the real client (Cf-Connecting-IP through the
+# tunnel). A 43-character token is not guessable anyway; this keeps a scanner
+# that found the hostname from spinning on it and filling the log.
+FAIL_LIMIT, FAIL_WINDOW, FAIL_LOCKOUT = 10, 600, 600
+FAILS = {}            # peer -> [timestamps of recent failures]
+LOCKED = {}           # peer -> unlock time
+FAIL_LOCK = threading.Lock()
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     # Set from main(). Empty string = no auth (the historic localhost-only mode).
     token = ""
+
+    def _via_tunnel(self):
+        """cloudflared connects from 127.0.0.1, so the TCP peer alone would make
+        every internet request look local. Cloudflare stamps these headers on
+        everything it forwards. Trusting them is safe in one direction only: a
+        client that adds them makes its own check stricter, never looser."""
+        return bool(self.headers.get("Cf-Connecting-IP") or self.headers.get("Cf-Ray"))
+
+    def _peer(self):
+        return self.headers.get("Cf-Connecting-IP") or self.client_address[0]
+
+    def _locked_out(self):
+        with FAIL_LOCK:
+            until = LOCKED.get(self._peer())
+            if until and until > time.time():
+                return True
+            LOCKED.pop(self._peer(), None)
+            return False
+
+    def _deny(self):
+        """401, counting the failure toward a lockout."""
+        now = time.time()
+        peer = self._peer()
+        with FAIL_LOCK:
+            recent = [t for t in FAILS.get(peer, []) if now - t < FAIL_WINDOW] + [now]
+            FAILS[peer] = recent
+            if len(recent) >= FAIL_LIMIT:
+                LOCKED[peer] = now + FAIL_LOCKOUT
+                FAILS.pop(peer, None)
+                print(f"[auth] {peer} locked out for {FAIL_LOCKOUT}s", flush=True)
+        return self._send(401, {"error": "token required"})
+
+    def _gate(self):
+        """Run before any route. Returns True if the request was already answered."""
+        if self._locked_out():
+            self._send(429, {"error": "too many bad tokens; try later"})
+            return True
+        if not self._authed():
+            self._deny()
+            return True
+        return False
+
+    def _body(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        return json.loads(self.rfile.read(n) or b"{}")
 
     def _authed(self):
         """Token may arrive as ?k=, as X-Monctl-Token, or as the monctl_k cookie.
@@ -597,12 +711,13 @@ class Handler(BaseHTTPRequestHandler):
         every subsequent request carries auth without touching any markup.
 
         Compared with compare_digest so a wrong guess cannot be narrowed down by
-        timing. Loopback is exempt: the token guards the LAN, and requiring it
-        locally would break the menu bar app's one-click open.
+        timing. Loopback is exempt: the token guards the LAN and the tunnel, and
+        requiring it locally would break the menu bar app's one-click open. A
+        tunnelled request also arrives from loopback, so it is not exempt.
         """
         if not self.token:
             return True
-        if self.client_address[0] in ("127.0.0.1", "::1"):
+        if self.client_address[0] in ("127.0.0.1", "::1") and not self._via_tunnel():
             return True
         supplied = (parse_qs(urlparse(self.path).query).get("k", [""])[0]
                     or self.headers.get("X-Monctl-Token", "")
@@ -649,8 +764,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path)
 
-        if not self._authed():
-            return self._send(401, {"error": "token required"})
+        if self._gate():
+            return
+
+        if u.path == "/api/remote":
+            return self._send(200, remote_snapshot())
 
         if u.path == "/api/watcher":
             return self._send(200, watcher_state())
@@ -784,6 +902,27 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         u = urlparse(self.path)
 
+        # Every POST changes something, so every one is gated -- including the
+        # cycler/auto/dim/autostart toggles that used to sit above this check.
+        if self._gate():
+            return
+
+        if u.path == "/api/nudge":
+            try:
+                body = self._body()
+                code = str(body.get("code", "")).upper()
+                delta = body.get("delta")
+            except (ValueError, json.JSONDecodeError):
+                return self._send(400, {"error": "bad json"})
+            if code not in NUDGEABLE:
+                return self._send(400, {"error": "code must be 10 or 62"})
+            if not isinstance(delta, int) or isinstance(delta, bool) or abs(delta) > 100:
+                return self._send(400, {"error": "delta must be an integer in -100..100"})
+            v = nudge(code, delta)
+            if v is None:
+                return self._send(502, {"error": "monitor did not answer"})
+            return self._send(200, {"ok": True, "code": code, **v})
+
         # The browser reports its own errors here so client-side failures are
         # visible in the terminal instead of only in devtools.
         if u.path == "/api/log":
@@ -862,9 +1001,6 @@ class Handler(BaseHTTPRequestHandler):
                               {"running": CYCLE["running"], "dwell": dwell,
                                "error": None if ok else "already running"})
 
-        if not self._authed():
-            return self._send(401, {"error": "token required"})
-
         if u.path == "/api/display":
             try:
                 n = int(self.headers.get("Content-Length") or 0)
@@ -921,23 +1057,56 @@ def lan_ip():
         s.close()
 
 
+TOKEN_FILE = os.path.expanduser("~/.config/monctl/token")
+
+
+def file_token():
+    """The persistent token, created on first use.
+
+    Kept in a 0600 file rather than on the command line, where it showed up in
+    `ps` and in the LaunchAgent plist. The LaunchAgent, the menu bar app's
+    fallback launch and `monctl web` all pick up the same one.
+    """
+    try:
+        with open(TOKEN_FILE) as f:
+            t = f.read().strip()
+        if t:
+            return t
+    except FileNotFoundError:
+        pass
+    t = secrets.token_urlsafe(32)
+    os.makedirs(os.path.dirname(TOKEN_FILE), mode=0o700, exist_ok=True)
+    fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(t + "\n")
+    return t
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--port", type=int, default=8770)
     ap.add_argument("--no-browser", action="store_true")
     ap.add_argument("--host", default="127.0.0.1",
                     help="bind address; 0.0.0.0 exposes it on the LAN")
     ap.add_argument("--lan", action="store_true",
                     help="shorthand for --host 0.0.0.0")
     ap.add_argument("--token", default=os.environ.get("MONCTL_TOKEN", ""),
-                    help="require ?k=TOKEN; 'auto' generates one. "
-                         "Strongly advised whenever binding beyond localhost.")
+                    help="require ?k=TOKEN; 'auto' generates a one-off one. "
+                         f"Default: the persistent token in {TOKEN_FILE}.")
+    ap.add_argument("--no-token", action="store_true",
+                    help="no auth at all (only sensible bound to 127.0.0.1 "
+                         "with no tunnel in front)")
     args = ap.parse_args()
 
     host = "0.0.0.0" if args.lan else args.host
     token = args.token
-    if token == "auto":
+    from_file = False
+    if args.no_token:
+        token = ""
+    elif token == "auto":
         token = secrets.token_urlsafe(9)
+    elif not token:
+        token, from_file = file_token(), True
     Handler.token = token
 
     if not os.access(DDCPROBE, os.X_OK):
@@ -956,9 +1125,13 @@ def main():
         raise
 
     shown = lan_ip() if host == "0.0.0.0" else host
-    suffix = f"?k={token}" if token else ""
+    # The persistent token is not echoed: this goes to a /tmp log, and that
+    # token also opens the tunnel. `cat ~/.config/monctl/token` when needed.
+    suffix = f"?k={token}" if token and not from_file else ""
     url = f"http://{shown}:{args.port}/{suffix}"
     print(f"monctl-web  →  {url}")
+    if from_file:
+        print(f"            token: {TOKEN_FILE} (append ?k=<token> from another device)")
     if host == "0.0.0.0":
         print(f"            also http://127.0.0.1:{args.port}/{suffix}")
         if not token:

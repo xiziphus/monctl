@@ -4,14 +4,22 @@
 <dict>
   <key>Label</key>
   <string>com.dell.monctl.web</string>
+  <!-- /usr/bin/python3 explicitly, NOT 'env python3'.
+       env resolves to Homebrew python, which is not in this Mac's firewall
+       allow-list, so inbound LAN connections to it are dropped with no error
+       anywhere. -u keeps /tmp/monctl-web.log unbuffered.
+       --lan is safe because server.py always requires its token from
+       ~/.config/monctl/token for anything but direct loopback; the token is
+       deliberately not on this command line. -->
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/env</string>
-    <string>python3</string>
+    <string>/usr/bin/python3</string>
+    <string>-u</string>
     <string>__SERVER__</string>
     <string>--no-browser</string>
     <string>--port</string>
-    <string>8765</string>
+    <string>8770</string>
+    <string>--lan</string>
   </array>
   <key>RunAtLoad</key>
   <true/>

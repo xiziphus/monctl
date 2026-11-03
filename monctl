@@ -395,11 +395,11 @@ case $cmd in
       fi ;;
   autostart)            # start the web panel at login
       case ${2-status} in
-        on)     curl -sf -X POST http://127.0.0.1:8765/api/autostart \
+        on)     curl -sf -X POST http://127.0.0.1:8770/api/autostart \
                   -H 'Content-Type: application/json' -d '{"enabled":true}' >/dev/null \
                   && print "start at login: enabled" \
                   || print -u2 "monctl: start 'monctl web' first" ;;
-        off)    curl -sf -X POST http://127.0.0.1:8765/api/autostart \
+        off)    curl -sf -X POST http://127.0.0.1:8770/api/autostart \
                   -H 'Content-Type: application/json' -d '{"enabled":false}' >/dev/null \
                   && print "start at login: disabled" \
                   || print -u2 "monctl: start 'monctl web' first" ;;

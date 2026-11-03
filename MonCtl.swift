@@ -12,7 +12,7 @@ import Darwin
 
 let DDCPROBE = ProcessInfo.processInfo.environment["DDCPROBE"]
     ?? (NSString(string: "~/bin/ddcprobe").expandingTildeInPath)
-let WEB_PORT: UInt16 = 8765
+let WEB_PORT: UInt16 = 8770
 let WEB_SERVER = NSString(string: "~/monctl/webui/server.py").expandingTildeInPath
 let WEB_AGENT  = "com.dell.monctl.web"
 let WEB_AGENT_PLIST = NSString(string: "~/Library/LaunchAgents/\(WEB_AGENT).plist")

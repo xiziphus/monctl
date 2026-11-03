@@ -13,8 +13,8 @@ This is a **public** git repo (github.com/xiziphus/monctl). Commit before a non-
 ```bash
 ./build.sh            # builds ~/Applications/MonCtl.app, compiles the C helpers into ~/bin, symlinks ~/bin/monctl -> ./monctl
 monctl                # CLI status (zsh script; edits are live because of the symlink)
-monctl web            # python3 webui/server.py on 127.0.0.1:8765
-python3 webui/server.py --no-browser --port 8765   # server directly; --lan/--host/--token for network access
+monctl web            # python3 webui/server.py on 127.0.0.1:8770
+python3 webui/server.py --no-browser --port 8770   # server directly; --lan/--host for network access, token from ~/.config/monctl/token
 monctl watch          # python3 watch.py
 monctl auto --dry-run # python3 autobright.py, decides but never writes
 ```
