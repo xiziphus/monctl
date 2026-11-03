@@ -1,40 +1,41 @@
 package com.xiziphus.monctl.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.Button
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.xiziphus.monctl.data.Config
 import com.xiziphus.monctl.data.Settings
 import com.xiziphus.monctl.net.MonctlClient
@@ -48,12 +49,12 @@ import kotlinx.coroutines.launch
  * monctl://pair link and pre-fills the form. Nothing is stored until Save --
  * any app or web page can fire that link.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(initial: Config, pairing: Config?, canGoBack: Boolean, onDone: () -> Unit) {
     val ctx = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
+    val c = V.c
     val start = pairing ?: initial
 
     var lan by remember(start) { mutableStateOf(start.lanUrl) }
@@ -65,104 +66,137 @@ fun SettingsScreen(initial: Config, pairing: Config?, canGoBack: Boolean, onDone
 
     fun current() = Config(lan, tunnel, token)
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Connection") },
-                navigationIcon = {
-                    if (canGoBack) {
-                        IconButton(onClick = onDone) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
-                    }
-                },
-            )
-        },
-    ) { pad ->
-        Column(
-            Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
+    Column(Modifier.fillMaxSize().background(c.bg).statusBarsPadding().navigationBarsPadding().imePadding()) {
+        Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (canGoBack) {
+                Text(
+                    "←", fontSize = 18.sp, color = c.fg,
+                    modifier = Modifier.clickable(onClick = onDone).padding(horizontal = 12.dp, vertical = 10.dp),
+                )
+            }
             Text(
-                "On the Mac, run `monctl pair` and open or paste the link it prints. " +
-                    "Or fill these in by hand.",
-                style = MaterialTheme.typography.bodyMedium,
+                "Connection", fontFamily = Geist, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = c.fg,
+                modifier = Modifier.padding(start = if (canGoBack) 0.dp else 12.dp),
             )
-            OutlinedButton(
-                onClick = {
-                    val parsed = Settings.parsePairing(clipboard.getText()?.text)
-                    if (parsed == null) {
-                        note = "The clipboard doesn't hold a monctl://pair link."
-                    } else {
-                        lan = parsed.lanUrl; tunnel = parsed.tunnelUrl; token = parsed.token
-                        note = "Pasted. Check it, then Save."
-                    }
-                },
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text("Paste pairing link") }
+        }
+        VDivider()
 
-            OutlinedTextField(
-                value = lan, onValueChange = { lan = it },
-                label = { Text("LAN URL") }, placeholder = { Text("http://192.168.1.x:8770") },
-                singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                supportingText = { Text("Used first, when the phone is on the same Wi-Fi.") },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(
-                value = tunnel, onValueChange = { tunnel = it },
-                label = { Text("Tunnel URL") }, placeholder = { Text("https://monctl.example.com") },
-                singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                supportingText = { Text("Cloudflare tunnel, used away from home.") },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(
-                value = token, onValueChange = { token = it },
-                label = { Text("Token") }, singleLine = true,
-                visualTransformation = if (showToken) VisualTransformation.None else PasswordVisualTransformation(),
-                trailingIcon = { TextButton(onClick = { showToken = !showToken }) { Text(if (showToken) "Hide" else "Show") } },
-                supportingText = { Text("~/.config/monctl/token on the Mac") },
-                modifier = Modifier.fillMaxWidth(),
-            )
-
-            note?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary) }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                OutlinedButton(
-                    enabled = !testing,
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+            VSection("Pair") {
+                VHint("On the Mac run `monctl pair`, copy the link, then paste it here. Or fill the fields by hand.")
+                VButton(
+                    "Paste pairing link",
                     onClick = {
-                        val c = Settings.normalize(current())
-                        Settings.validate(c)?.let { note = it; return@OutlinedButton }
+                        val parsed = Settings.parsePairing(clipboard.getText()?.text)
+                        if (parsed == null) {
+                            note = "The clipboard doesn't hold a monctl://pair link."
+                        } else {
+                            lan = parsed.lanUrl; tunnel = parsed.tunnelUrl; token = parsed.token
+                            note = "Pasted. Check it, then Save."
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+
+            VSection("Server") {
+                VField(lan, { lan = it }, "LAN URL", "http://192.168.1.x:8770", "Used first, on the same Wi-Fi.")
+                VField(tunnel, { tunnel = it }, "Tunnel URL", "https://monctl.example.com", "Cloudflare tunnel, used away from home.")
+                VField(
+                    token, { token = it }, "Token", "", "~/.config/monctl/token on the Mac",
+                    secret = !showToken,
+                    trailing = {
+                        Text(
+                            if (showToken) "Hide" else "Show", fontFamily = Geist, fontSize = 12.sp, color = c.muted,
+                            modifier = Modifier.clickable { showToken = !showToken }.padding(10.dp),
+                        )
+                    },
+                )
+            }
+
+            note?.let { VNotice(it, danger = false) }
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+            ) {
+                VButton(
+                    "Test",
+                    enabled = !testing,
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        val cfg = Settings.normalize(current())
+                        Settings.validate(cfg)?.let { note = it; return@VButton }
                         testing = true
                         note = "Testing…"
                         scope.launch {
-                            note = MonctlClient.test(c).joinToString("\n") { (route, r) ->
+                            note = MonctlClient.test(cfg).joinToString("\n") { (route, r) ->
                                 "${route.label}: " + when (r) {
-                                    is Reply.Ok -> "OK" + if (r.value.asleep) " (display asleep)" else ""
+                                    is Reply.Ok -> "OK" + if (r.value.asleep) " (display off)" else ""
                                     else -> r.message()
                                 }
                             }
                             testing = false
                         }
                     },
+                )
+                VButton(
+                    "Save",
+                    primary = true,
                     modifier = Modifier.weight(1f),
-                ) { Text("Test") }
-                Button(
                     onClick = {
-                        val c = current()
-                        Settings.validate(c)?.let { note = it; return@Button }
+                        val cfg = current()
+                        Settings.validate(cfg)?.let { note = it; return@VButton }
                         scope.launch {
-                            Settings.save(ctx, c)
+                            Settings.save(ctx, cfg)
                             onDone()
                         }
                     },
-                    modifier = Modifier.weight(1f),
-                ) { Text("Save") }
+                )
             }
+            VDivider()
 
             Text(
-                "MonCtl ${Updater.installedName}. Updates come from the Mac (android/publish.sh) " +
-                    "and are offered on the main screen.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                "MONCTL ${Updater.installedName}",
+                style = LabelMono, color = c.subtle,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
             )
         }
+    }
+}
+
+@Composable
+private fun VField(
+    value: String,
+    onChange: (String) -> Unit,
+    label: String,
+    placeholder: String,
+    help: String,
+    secret: Boolean = false,
+    trailing: (@Composable () -> Unit)? = null,
+) {
+    val c = V.c
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(label, fontFamily = Geist, fontWeight = FontWeight.Medium, fontSize = 13.sp, color = c.fg)
+        OutlinedTextField(
+            value = value,
+            onValueChange = onChange,
+            placeholder = { Text(placeholder, fontFamily = GeistMono, fontSize = 13.sp, color = c.subtle) },
+            singleLine = true,
+            shape = RectangleShape,
+            textStyle = TextStyle(fontFamily = GeistMono, fontSize = 13.sp, color = c.fg),
+            visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
+            keyboardOptions = KeyboardOptions(keyboardType = if (secret) KeyboardType.Password else KeyboardType.Uri),
+            trailingIcon = trailing,
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = c.fg,
+                unfocusedBorderColor = c.borderStrong,
+                cursorColor = c.fg,
+                focusedContainerColor = c.bg,
+                unfocusedContainerColor = c.bg,
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        VHint(help)
     }
 }

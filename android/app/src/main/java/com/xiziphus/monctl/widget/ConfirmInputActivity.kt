@@ -3,9 +3,6 @@ package com.xiziphus.monctl.widget
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -14,6 +11,7 @@ import androidx.compose.runtime.setValue
 import com.xiziphus.monctl.net.Reply
 import com.xiziphus.monctl.net.message
 import com.xiziphus.monctl.ui.MonctlTheme
+import com.xiziphus.monctl.ui.VDialog
 import kotlinx.coroutines.launch
 
 /**
@@ -42,28 +40,22 @@ class ConfirmInputActivity : ComponentActivity() {
                 var busy by remember { mutableStateOf(false) }
                 var error by remember { mutableStateOf<String?>(null) }
 
-                AlertDialog(
-                    onDismissRequest = { if (!busy) finish() },
-                    title = { Text(if (busy) "Switching to $name…" else "Switch to $name?") },
-                    text = { Text(error ?: "The monitor drops its current signal. DisplayPort is the Mac.") },
-                    confirmButton = {
-                        TextButton(
-                            enabled = !busy,
-                            onClick = {
-                                busy = true
-                                scope.launch {
-                                    val r = WidgetActions.switchInput(applicationContext, code)
-                                    if (r is Reply.Ok) finish() else {
-                                        busy = false
-                                        error = r.message()
-                                    }
-                                }
-                            },
-                        ) { Text(if (error == null) "Switch" else "Retry") }
+                VDialog(
+                    title = if (busy) "Switching to $name…" else "Switch to $name?",
+                    text = error ?: "The monitor drops its current signal. DisplayPort is the Mac.",
+                    confirm = if (error == null) "Switch" else "Retry",
+                    busy = busy,
+                    onConfirm = {
+                        busy = true
+                        scope.launch {
+                            val r = WidgetActions.switchInput(applicationContext, code)
+                            if (r is Reply.Ok) finish() else {
+                                busy = false
+                                error = r.message()
+                            }
+                        }
                     },
-                    dismissButton = {
-                        TextButton(enabled = !busy, onClick = { finish() }) { Text("Cancel") }
-                    },
+                    onDismiss = { finish() },
                 )
             }
         }

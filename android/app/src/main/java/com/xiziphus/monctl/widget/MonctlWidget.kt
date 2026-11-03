@@ -11,7 +11,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
-import androidx.glance.GlanceTheme
 import androidx.glance.LocalSize
 import androidx.glance.action.Action
 import androidx.glance.action.actionParametersOf
@@ -21,7 +20,6 @@ import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.SizeMode
 import androidx.glance.appwidget.action.actionRunCallback
 import androidx.glance.appwidget.action.actionStartActivity
-import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.provideContent
 import androidx.glance.background
 import androidx.glance.layout.Alignment
@@ -37,7 +35,10 @@ import androidx.glance.layout.width
 import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
-import androidx.glance.unit.ColorProvider
+import androidx.glance.color.ColorProvider
+import androidx.glance.text.FontFamily
+import androidx.glance.unit.ColorProvider as GlanceColor
+import androidx.compose.ui.graphics.Color
 import com.xiziphus.monctl.net.InputOption
 import com.xiziphus.monctl.net.Route
 import com.xiziphus.monctl.net.Snapshot
@@ -63,7 +64,7 @@ class MonctlWidget : GlanceAppWidget() {
         val initial = WidgetStore.load(context)
         provideContent {
             val state by WidgetStore.flow(context).collectAsState(initial)
-            GlanceTheme { Content(context, state) }
+            Content(context, state)
         }
     }
 }
@@ -77,25 +78,27 @@ private fun Content(context: Context, st: WidgetStore.State) {
 
     Column(
         modifier = GlanceModifier.fillMaxSize()
-            .background(GlanceTheme.colors.widgetBackground)
-            .cornerRadius(16.dp)
-            .padding(6.dp),
+            .background(W.border)
+            .padding(1.dp)
+            .background(W.bg)
+            .padding(4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (full) {
-            Row(GlanceModifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(GlanceModifier.fillMaxWidth().padding(horizontal = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     summary(st),
-                    style = TextStyle(color = GlanceTheme.colors.onSurface, fontSize = 13.sp, fontWeight = FontWeight.Medium),
+                    style = TextStyle(color = W.fg, fontSize = 12.sp, fontWeight = FontWeight.Medium, fontFamily = FontFamily.Monospace),
                     maxLines = 1,
                     modifier = GlanceModifier.defaultWeight().clickable(actionStartActivity<MainActivity>()),
                 )
                 s?.watcher?.takeIf { it.installed }?.let { w ->
                     Text(
-                        if (w.active) "AirPlay ●" else "AirPlay ○",
+                        if (w.active) "AIRPLAY ●" else "AIRPLAY ○",
                         style = TextStyle(
-                            color = if (w.active) GlanceTheme.colors.primary else GlanceTheme.colors.onSurfaceVariant,
-                            fontSize = 12.sp,
+                            color = if (w.active) W.fg else W.muted,
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Medium,
                         ),
                         modifier = GlanceModifier.padding(horizontal = 6.dp).clickable(actionRunCallback<WatcherAction>()),
@@ -103,11 +106,11 @@ private fun Content(context: Context, st: WidgetStore.State) {
                 }
                 Text(
                     "⟳",
-                    style = TextStyle(color = GlanceTheme.colors.onSurfaceVariant, fontSize = 16.sp),
+                    style = TextStyle(color = W.muted, fontSize = 15.sp),
                     modifier = GlanceModifier.padding(horizontal = 6.dp).clickable(actionRunCallback<RefreshAction>()),
                 )
             }
-            Spacer(GlanceModifier.height(4.dp))
+            Spacer(GlanceModifier.height(3.dp))
         }
 
         Row(GlanceModifier.fillMaxWidth()) {
@@ -131,7 +134,7 @@ private fun Content(context: Context, st: WidgetStore.State) {
         }
 
         if (full) {
-            Spacer(GlanceModifier.height(4.dp))
+            Spacer(GlanceModifier.height(3.dp))
             Row(GlanceModifier.fillMaxWidth()) {
                 val options = s?.inputOptions ?: InputOption.DEFAULTS
                 options.forEachIndexed { i, opt ->
@@ -172,16 +175,31 @@ private fun confirmInput(context: Context, opt: InputOption): Action =
     )
 
 @Composable
-private fun Gap() = Spacer(GlanceModifier.width(4.dp))
+private fun Gap() = Spacer(GlanceModifier.width(3.dp))
 
 @Composable
 private fun Pill(label: String, action: Action, modifier: GlanceModifier = GlanceModifier, emphasis: Boolean = false) {
-    val bg: ColorProvider = if (emphasis) GlanceTheme.colors.primaryContainer else GlanceTheme.colors.secondaryContainer
-    val fg: ColorProvider = if (emphasis) GlanceTheme.colors.onPrimaryContainer else GlanceTheme.colors.onSecondaryContainer
+    // Square, 1px border (Glance has no border modifier: an outer box in the
+    // border colour, padded by 1dp, around the fill). Emphasis = solid fg.
+    val fill: GlanceColor = if (emphasis) W.fg else W.bg
+    val fg: GlanceColor = if (emphasis) W.bg else W.fg
     Box(
-        modifier = modifier.height(36.dp).background(bg).cornerRadius(12.dp).clickable(action),
-        contentAlignment = Alignment.Center,
+        modifier = modifier.height(32.dp).background(if (emphasis) W.fg else W.borderStrong).padding(1.dp),
     ) {
-        Text(label, style = TextStyle(color = fg, fontSize = 14.sp, fontWeight = FontWeight.Medium), maxLines = 1)
+        Box(
+            GlanceModifier.fillMaxSize().background(fill).clickable(action),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(label, style = TextStyle(color = fg, fontSize = 13.sp, fontWeight = FontWeight.Medium), maxLines = 1)
+        }
     }
+}
+
+/** The app's Vercel palette, day/night. Fixed rather than wallpaper-derived. */
+private object W {
+    val bg: GlanceColor = ColorProvider(day = Color(0xFFFFFFFF), night = Color(0xFF000000))
+    val fg: GlanceColor = ColorProvider(day = Color(0xFF171717), night = Color(0xFFEDEDED))
+    val muted: GlanceColor = ColorProvider(day = Color(0xFF666666), night = Color(0xFFA1A1A1))
+    val border: GlanceColor = ColorProvider(day = Color(0xFFEAEAEA), night = Color(0xFF242424))
+    val borderStrong: GlanceColor = ColorProvider(day = Color(0xFFD4D4D4), night = Color(0xFF3D3D3D))
 }
