@@ -136,13 +136,8 @@ private fun Content(context: Context, st: WidgetStore.State) {
                 val options = s?.inputOptions ?: InputOption.DEFAULTS
                 options.forEachIndexed { i, opt ->
                     if (i > 0) Gap()
-                    val current = s?.currentInput == opt.code
-                    Pill(
-                        opt.name,
-                        if (current) actionRunCallback<RefreshAction>() else confirmInput(context, opt),
-                        GlanceModifier.defaultWeight(),
-                        emphasis = current,
-                    )
+                    // Always a real switch: the monitor can't say which input is showing.
+                    Pill(opt.name, confirmInput(context, opt), GlanceModifier.defaultWeight())
                 }
             }
         }
@@ -157,7 +152,6 @@ private fun summary(st: WidgetStore.State): String {
         s.asleep -> "Monitor off$where"
         !s.reachable -> "Monitor not answering$where"
         else -> listOfNotNull(
-            s.currentInputName,
             s.brightness?.let { "☀ ${it.cur}" },
             s.volume?.let { if (s.muted == true) "🔇" else "🔊 ${it.cur}" },
         ).joinToString(" · ") + where

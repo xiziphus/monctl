@@ -38,11 +38,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.xiziphus.monctl.net.InputOption
 import com.xiziphus.monctl.net.Level
 import com.xiziphus.monctl.net.Snapshot
 import com.xiziphus.monctl.net.WatcherState
+import com.xiziphus.monctl.update.Updater
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -71,6 +73,7 @@ fun MainScreen(ui: UiState, vm: MainViewModel, onSettings: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 StatusRow(ui)
+                ui.update?.let { UpdateBanner(it.versionName, ui.updateProgress, vm::installUpdate) }
                 if (ui.working) LinearProgressIndicator(Modifier.fillMaxWidth())
                 ui.message?.let { Notice(it, onDismiss = vm::dismissMessage) }
 
@@ -126,6 +129,31 @@ fun MainScreen(ui: UiState, vm: MainViewModel, onSettings: () -> Unit) {
 }
 
 @Composable
+private fun UpdateBanner(version: String, progress: String?, onInstall: () -> Unit) {
+    val context = LocalContext.current
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(Modifier.padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Update available", style = MaterialTheme.typography.titleSmall)
+                Text(progress ?: "Version $version", style = MaterialTheme.typography.bodySmall)
+            }
+            Button(
+                enabled = progress == null,
+                onClick = {
+                    // Android asks once for permission to install apps; the
+                    // user comes back and taps Update again.
+                    if (Updater.canInstall(context)) onInstall()
+                    else context.startActivity(Updater.permissionIntent(context))
+                },
+            ) { Text("Update") }
+        }
+    }
+}
+
+@Composable
 private fun StatusRow(ui: UiState) {
     val s = ui.snapshot
     val power = when {
@@ -136,7 +164,6 @@ private fun StatusRow(ui: UiState) {
     }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         AssistChip(onClick = {}, label = { Text(power) })
-        s?.currentInputName?.let { AssistChip(onClick = {}, label = { Text(it) }) }
         ui.route?.let { AssistChip(onClick = {}, label = { Text("via ${it.label}") }) }
     }
 }
@@ -204,17 +231,22 @@ private fun LevelSlider(level: Level, onChange: (Int) -> Unit) {
 
 @Composable
 private fun InputCard(s: Snapshot, enabled: Boolean, onPick: (InputOption) -> Unit) {
+    // Every button always switches: the monitor can't report which input is
+    // showing, and DDC works from any of them.
     SectionCard("Input") {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             s.inputOptions.forEach { opt ->
-                val current = s.currentInput == opt.code
-                val mod = Modifier.weight(1f)
-                if (current) {
-                    Button(onClick = {}, enabled = enabled, modifier = mod) { Text(opt.name, maxLines = 1) }
-                } else {
-                    FilledTonalButton(onClick = { onPick(opt) }, enabled = enabled, modifier = mod) { Text(opt.name, maxLines = 1) }
+                FilledTonalButton(onClick = { onPick(opt) }, enabled = enabled, modifier = Modifier.weight(1f)) {
+                    Text(opt.name, maxLines = 1)
                 }
             }
+        }
+        s.lastInputName?.let {
+            Text(
+                "Last switched to $it from MonCtl. The monitor can't report its input, so changes made on its own buttons don't show here.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

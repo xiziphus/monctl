@@ -18,6 +18,7 @@ python3 webui/server.py --no-browser --port 8770   # server directly; --lan/--ho
 monctl watch          # python3 watch.py
 monctl auto --dry-run # python3 autobright.py, decides but never writes
 monctl pair           # monctl://pair link (token + LAN + tunnel URL) for the Android app
+android/publish.sh    # build the app and publish it to the in-app update channel (~/.local/share/monctl/android)
 cd android && ./gradlew assembleDebug && adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
@@ -57,5 +58,6 @@ android/ (Kotlin, Compose, Glance widget) ──LAN :8770 or Cloudflare tunnel�
 
 - Acer's capabilities string is wrong in both directions (`0x8D` mute works but isn't listed; `E0`/`E7` are listed but don't answer). Trust `ddcprobe scan`.
 - Capabilities fragments: the payload starts at index **5**, not 6.
+- **Reading `0x60` is meaningless on this panel**: it answers 15 (DP), max=1, whatever input is showing. Writing it works from any input. Never gate or highlight inputs on that read; `server.py` reports only `last_input` (what monctl last wrote). `webui/index.html` (`paintInput`) and the Swift app still trust the read.
 - Input codes: `0x0F` DP, `0x11` (17) HDMI1, `0x12` (18) HDMI2. The menu bar app offers HDMI 1, DisplayPort and HDMI 2; the web UI offers HDMI only.
 - `0xE1–0xE9`, `0xF0` are unmapped Acer vendor codes. Don't write them speculatively.

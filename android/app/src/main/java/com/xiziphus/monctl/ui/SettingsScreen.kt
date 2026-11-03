@@ -40,6 +40,7 @@ import com.xiziphus.monctl.data.Settings
 import com.xiziphus.monctl.net.MonctlClient
 import com.xiziphus.monctl.net.Reply
 import com.xiziphus.monctl.net.message
+import com.xiziphus.monctl.update.Updater
 import kotlinx.coroutines.launch
 
 /**
@@ -155,6 +156,13 @@ fun SettingsScreen(initial: Config, pairing: Config?, canGoBack: Boolean, onDone
                     modifier = Modifier.weight(1f),
                 ) { Text("Save") }
             }
+
+            Text(
+                "MonCtl ${Updater.installedName}. Updates come from the Mac (android/publish.sh) " +
+                    "and are offered on the main screen.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

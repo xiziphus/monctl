@@ -13,8 +13,11 @@ android {
         applicationId = "com.xiziphus.monctl"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1"
+        // Minutes since the epoch: every build outranks the last, which the
+        // in-app updater needs (Android won't install an equal versionCode).
+        val stamp = (System.currentTimeMillis() / 60_000).toInt()
+        versionCode = stamp
+        versionName = "0.2.$stamp"
     }
 
     buildTypes {
@@ -31,6 +34,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

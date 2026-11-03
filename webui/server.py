@@ -346,7 +346,18 @@ def write_one(code, value):
         return False
     # A write is always someone pressing something, so it may wake the panel to
     # be delivered. Reads must not -- see probe().
-    return "<-" in probe(["set", code, str(value)], timeout=20, revive=True)
+    ok = "<-" in probe(["set", code, str(value)], timeout=20, revive=True)
+    if ok and code.upper() == "60":
+        LAST_INPUT["code"] = value
+        LAST_INPUT["at"] = time.time()
+    return ok
+
+
+# Reading VCP 0x60 on this Acer is useless: it answers 15 (DisplayPort) with
+# max=1 whatever input is showing -- the query arrives over the DP cable. So
+# the only input knowledge there is, is the last one *we* switched to (web UI,
+# cycler, Android app). OSD-button or auto-source changes are invisible.
+LAST_INPUT = {"code": None, "at": None}
 
 
 # ---------------------------------------------------------------------------
@@ -361,6 +372,26 @@ def write_one(code, value):
 # The OSD catalog lists HDMI only for the web panel; the phone also offers
 # DisplayPort, which is the Mac itself, so "back to the Mac" is one tap.
 REMOTE_INPUTS = [[15, "DisplayPort"], [17, "HDMI 1"], [18, "HDMI 2"]]
+
+# Update channel for the Android app. android/publish.sh builds the APK and
+# drops it here with a version.json beside it; the app polls /api/app/version
+# and downloads /api/app/apk over the same authenticated route it uses for
+# everything else. Android itself refuses an update signed by another key, so
+# the token and that signature check are the whole trust story -- no public
+# release page needed.
+APK_CHANNEL = os.path.expanduser("~/.local/share/monctl/android")
+
+
+def app_version():
+    """{versionCode, versionName, sha256, size} of the published APK, or None."""
+    try:
+        with open(os.path.join(APK_CHANNEL, "version.json")) as f:
+            v = json.load(f)
+        if os.path.isfile(os.path.join(APK_CHANNEL, "MonCtl.apk")):
+            return v
+    except (OSError, ValueError):
+        pass
+    return None
 NUDGEABLE = ("10", "62")
 # Read-modify-write must not interleave: two quick widget taps would both read
 # 50 and both write 60.
@@ -377,19 +408,20 @@ def remote_snapshot():
     """
     st = display_power_state()
     asleep = st is not None and st < 4
+    # "input" stays null: see LAST_INPUT for why the panel's own answer is
+    # not reported. last_input is what monctl last switched it to.
     out = {"asleep": asleep, "reachable": False, "inputs": REMOTE_INPUTS,
            "brightness": None, "volume": None, "muted": None, "input": None,
+           "last_input": LAST_INPUT["code"], "last_input_at": LAST_INPUT["at"],
            "watcher": watcher_state()}
     if asleep:
         return out
-    v = read_many(["10", "62", "8D", "60"])
+    v = read_many(["10", "62", "8D"])
     out["reachable"] = bool(v)
     out["brightness"] = v.get("10")
     out["volume"] = v.get("62")
     if "8D" in v:
         out["muted"] = v["8D"]["cur"] == 1
-    if "60" in v:
-        out["input"] = v["60"]["cur"]
     return out
 
 
@@ -800,6 +832,17 @@ class Handler(BaseHTTPRequestHandler):
 
         if u.path == "/api/remote":
             return self._send(200, remote_snapshot())
+
+        if u.path == "/api/app/version":
+            v = app_version()
+            return self._send(200, v) if v else self._send(404, {"error": "no APK published"})
+
+        if u.path == "/api/app/apk":
+            try:
+                with open(os.path.join(APK_CHANNEL, "MonCtl.apk"), "rb") as f:
+                    return self._send(200, f.read(), "application/vnd.android.package-archive")
+            except OSError:
+                return self._send(404, {"error": "no APK published"})
 
         if u.path == "/api/watcher":
             return self._send(200, watcher_state())

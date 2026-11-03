@@ -5,7 +5,9 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.xiziphus.monctl.data.Config
 import com.xiziphus.monctl.data.Settings
+import com.xiziphus.monctl.net.AppVersion
 import com.xiziphus.monctl.net.MonctlClient
+import com.xiziphus.monctl.update.Updater
 import com.xiziphus.monctl.net.Reply
 import com.xiziphus.monctl.net.Route
 import com.xiziphus.monctl.net.Snapshot
@@ -25,6 +27,10 @@ data class UiState(
     val loading: Boolean = false,
     val working: Boolean = false,
     val message: String? = null,
+    /** A newer APK in the Mac's update channel, or null. */
+    val update: AppVersion? = null,
+    /** "Downloading 40%" / "Installing…" while an update runs. */
+    val updateProgress: String? = null,
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -73,6 +79,41 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 else it.copy(loading = false, message = r.message())
             }
             WidgetStore.publish(ctx, r)
+            if (r is Reply.Ok) checkForUpdate(cfg)
+        }
+    }
+
+    private suspend fun checkForUpdate(cfg: Config) {
+        val r = MonctlClient.appVersion(cfg)
+        if (r is Reply.Ok) {
+            _ui.update { it.copy(update = r.value.takeIf { v -> v.versionCode > Updater.installedCode }) }
+        }
+    }
+
+    /** Caller checks Updater.canInstall first: granting it needs an Activity. */
+    fun installUpdate() {
+        val cfg = _ui.value.config ?: return
+        val v = _ui.value.update ?: return
+        if (_ui.value.updateProgress != null) return
+        viewModelScope.launch {
+            val file = Updater.apkFile(ctx)
+            _ui.update { it.copy(updateProgress = "Downloading…") }
+            val r = MonctlClient.downloadApk(cfg, file) { pct ->
+                _ui.update { it.copy(updateProgress = "Downloading $pct%") }
+            }
+            if (r !is Reply.Ok) {
+                _ui.update { it.copy(updateProgress = null, message = r.message()) }
+                return@launch
+            }
+            if (Updater.sha256(file) != v.sha256) {
+                // Usually a publish landed mid-download; the next check sees the new version.
+                _ui.update { it.copy(updateProgress = null, message = "Download didn't match the published checksum. Try again.") }
+                return@launch
+            }
+            _ui.update { it.copy(updateProgress = "Installing…") }
+            runCatching { Updater.install(ctx, file) }
+                .onFailure { e -> _ui.update { it.copy(message = "Install failed: ${e.message}") } }
+            _ui.update { it.copy(updateProgress = null) }
         }
     }
 

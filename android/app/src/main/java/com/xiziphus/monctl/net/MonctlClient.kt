@@ -12,6 +12,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
@@ -109,6 +110,56 @@ object MonctlClient {
         call(cfg, post("/api/watcher", buildJsonObject { put("action", if (start) "start" else "stop") })) {
             json.decodeFromString<WatcherState>(it)
         }
+
+    suspend fun appVersion(cfg: Config): Reply<AppVersion> =
+        call(cfg, get("/api/app/version"), retryable = true) { json.decodeFromString<AppVersion>(it) }
+
+    /** Stream the published APK to [dest], reporting whole-percent progress. */
+    suspend fun downloadApk(cfg: Config, dest: File, onProgress: (Int) -> Unit): Reply<Unit> = withContext(Dispatchers.IO) {
+        if (!cfg.isConfigured) return@withContext Reply.NotConfigured
+        val route = resolve(cfg) ?: return@withContext Reply.Unreachable("not on the LAN and no tunnel set")
+        val http = (if (route == Route.LAN) lanHttp else tunnelHttp).newBuilder()
+            .readTimeout(60, TimeUnit.SECONDS)
+            .build()
+        try {
+            val req = Request.Builder().url(baseFor(cfg, route) + "/api/app/apk")
+                .header("X-Monctl-Token", cfg.token).build()
+            http.newCall(req).execute().use { resp ->
+                when (resp.code) {
+                    200 -> Unit
+                    401 -> return@withContext Reply.Unauthorized
+                    429 -> return@withContext Reply.LockedOut
+                    404 -> return@withContext Reply.Failed("No update published on the Mac")
+                    else -> return@withContext Reply.Failed("Download failed: HTTP ${resp.code}")
+                }
+                val body = resp.body ?: return@withContext Reply.Failed("Empty download")
+                val total = body.contentLength()
+                body.byteStream().use { input ->
+                    dest.outputStream().use { out ->
+                        val buf = ByteArray(64 * 1024)
+                        var done = 0L
+                        var last = -1
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n < 0) break
+                            out.write(buf, 0, n)
+                            done += n
+                            if (total > 0) {
+                                val pct = (done * 100 / total).toInt()
+                                if (pct != last) onProgress(pct.also { last = it })
+                            }
+                        }
+                    }
+                }
+                Reply.Ok(Unit, route)
+            }
+        } catch (e: IOException) {
+            forgetRoute()
+            Reply.Unreachable(e.message ?: e.javaClass.simpleName)
+        } catch (e: IllegalArgumentException) {
+            Reply.Failed("Bad URL in Settings")
+        }
+    }
 
     /** Settings' "Test" button: try each configured route on its own, uncached. */
     suspend fun test(cfg: Config): List<Pair<Route, Reply<DisplayReply>>> = withContext(Dispatchers.IO) {

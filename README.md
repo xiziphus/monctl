@@ -205,6 +205,18 @@ cd android
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
+**Updates.** `android/publish.sh` builds the app and copies it to
+`~/.local/share/monctl/android/` with a `version.json` (versionCode, name,
+SHA-256). `server.py` serves that as `GET /api/app/version` and
+`GET /api/app/apk`, behind the token, over whichever route the phone uses.
+The app checks on every open and shows **Update**: it downloads, checks the
+SHA-256, and installs through `PackageInstaller`. The first time, Android asks
+to allow MonCtl to install apps, and confirms the update. After that, Android 12+
+installs later updates without asking. The versionCode is minutes since the
+epoch, so every build outranks the last. Builds are signed with this Mac's
+`~/.android/debug.keystore`; lose it and the installed app can't be updated
+(uninstall and reinstall instead).
+
 **How it picks a route.** Before sending the token in cleartext to the LAN
 address, the app asks it `GET /api/hello` (unauthenticated) with a 700 ms
 budget, because another Wi-Fi network can have a different device at the same
@@ -236,6 +248,13 @@ idempotent, unlike the body-less toggle the other front ends use.
   control stops when the Mac sleeps.
 - Input switches are confirmed in the app and in the widget (a one-tap dialog),
   as in every other front end.
+- **There is no "current input".** Reading VCP `0x60` on this Acer returns 15
+  (DisplayPort, with max=1) whatever input is showing, presumably because the
+  query arrives over the DP cable. Switching works from any input. The app
+  therefore never highlights an input or disables a button; it shows only the
+  input monctl last switched to (`last_input` in `/api/remote`, tracked by
+  `write_one` in server.py). Changes made with the OSD buttons are invisible.
+  The web panel and menu bar app still light a button from the bogus read.
 - The widget refreshes after each tap, when the app is opened, and every
   15 minutes (WorkManager's minimum) while there's a network.
 

@@ -1,5 +1,6 @@
 package com.xiziphus.monctl.net
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.contentOrNull
@@ -28,6 +29,8 @@ data class Snapshot(
     val muted: Boolean? = null,
     val input: Int? = null,
     val watcher: WatcherState? = null,
+    /** The input monctl last switched to (any front end), or null. */
+    @SerialName("last_input") val lastInput: Int? = null,
 ) {
     val inputOptions: List<InputOption>
         get() = inputs.mapNotNull { pair ->
@@ -36,11 +39,14 @@ data class Snapshot(
             InputOption(code, name)
         }.ifEmpty { InputOption.DEFAULTS }
 
-    /** Some panels report the source with flag bits above the low byte. */
-    val currentInput: Int? get() = input?.and(0xFF)
-
-    val currentInputName: String?
-        get() = currentInput?.let { c -> inputOptions.firstOrNull { it.code == c }?.name }
+    /**
+     * There is deliberately no "current input": this Acer answers the VCP 0x60
+     * query with DisplayPort whatever it is showing, and switching works from
+     * any input. All the server can report is what monctl last switched to;
+     * the monitor's own buttons change it invisibly.
+     */
+    val lastInputName: String?
+        get() = lastInput?.let { c -> inputOptions.firstOrNull { it.code == c }?.name }
 }
 
 data class InputOption(val code: Int, val name: String) {
@@ -73,6 +79,15 @@ data class WatcherState(
 ) {
     val active: Boolean get() = running && !paused
 }
+
+/** GET /api/app/version: the APK android/publish.sh last put in the update channel. */
+@Serializable
+data class AppVersion(
+    val versionCode: Long,
+    val versionName: String,
+    val sha256: String,
+    val size: Long = 0,
+)
 
 @Serializable
 data class DisplayReply(val asleep: Boolean = false)
