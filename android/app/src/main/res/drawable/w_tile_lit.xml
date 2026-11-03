@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A lit tile: the thing is on (Palette.lit, Radius.tile). -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <corners android:radius="22dp" />
+    <solid android:color="@color/w_lit" />
+</shape>

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Palette.tile with Radius.tile. A drawable rather than cornerRadius() so the
+     corners are round below API 31 too. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <corners android:radius="22dp" />
+    <solid android:color="@color/w_tile" />
+</shape>

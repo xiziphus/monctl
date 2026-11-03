@@ -54,13 +54,17 @@ object WidgetStore {
 
     suspend fun load(context: Context): State = flow(context).first()
 
-    /** Store a fresh snapshot, or keep the old one and show why it couldn't refresh. */
-    suspend fun publish(context: Context, reply: Reply<Snapshot>) {
+    /**
+     * Store a fresh snapshot, or keep the old one and show why it couldn't
+     * refresh. [keepStatus] leaves the status line alone on success: a read
+     * taken in the middle of an action, which is still showing "…".
+     */
+    suspend fun publish(context: Context, reply: Reply<Snapshot>, keepStatus: Boolean = false) {
         context.widgetStore.edit { p ->
             if (reply is Reply.Ok) {
                 p[SNAPSHOT] = MonctlClient.json.encodeToString(Snapshot.serializer(), reply.value)
                 p[ROUTE] = reply.route.name
-                p[STATUS] = ""
+                if (!keepStatus) p[STATUS] = ""
                 p[AT] = System.currentTimeMillis()
             } else {
                 p[STATUS] = reply.shortMessage()
@@ -74,17 +78,25 @@ object WidgetStore {
         MonctlWidget().updateAll(context)
     }
 
-    /** Apply a known change (a nudge's new value, a mute) without another full DDC read. */
-    suspend fun patch(context: Context, route: Route, change: (Snapshot) -> Snapshot) {
+    /**
+     * Apply a known change (a nudge's new value, a mute) without another full
+     * DDC read. The action succeeded either way, so its "…" is cleared even
+     * when there is no snapshot to patch yet; false then, and the caller
+     * should fetch one.
+     */
+    suspend fun patch(context: Context, route: Route, change: (Snapshot) -> Snapshot): Boolean {
+        var patched = false
         context.widgetStore.edit { p ->
+            p[STATUS] = ""
             val cur = p[SNAPSHOT]?.let { runCatching { MonctlClient.json.decodeFromString<Snapshot>(it) }.getOrNull() }
                 ?: return@edit
             p[SNAPSHOT] = MonctlClient.json.encodeToString(Snapshot.serializer(), change(cur))
             p[ROUTE] = route.name
-            p[STATUS] = ""
             p[AT] = System.currentTimeMillis()
+            patched = true
         }
         MonctlWidget().updateAll(context)
+        return patched
     }
 
     suspend fun status(context: Context, text: String) {

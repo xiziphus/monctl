@@ -254,7 +254,9 @@ used, because they rewrite `items.json` and restart MTMR. `airplay_pick.sh` and
 - Switching the Mac's Wi-Fi cuts the connection the phone may be using. The app
   warns, then looks for the Mac again on whichever route answers. There is
   deliberately no Wi-Fi Off, as on the Touch Bar.
-- The widget's large size adds a `MAC 80% ⚡ · <SSID>` line.
+- The widget uses the same tile look in five sizes (2x1, 4x1, 2x2, short 4x2,
+  4x2+). Power and mute tiles light up when on; the large size adds a
+  `MAC 80% charging · <SSID>` line, a Watcher toggle and refresh.
 - `/api/mac` also reports the current sound output (`output`, from Homebrew
   `SwitchAudioSource`) and whether an AirPlay display is online
   (`airplay.connected`). The watcher's status line can't say that while it is

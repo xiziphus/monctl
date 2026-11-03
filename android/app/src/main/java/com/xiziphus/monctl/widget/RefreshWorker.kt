@@ -33,13 +33,16 @@ class RefreshWorker(context: Context, params: WorkerParameters) : CoroutineWorke
     companion object {
         private const val PERIODIC = "monctl-widget-refresh"
         private const val ONCE = "monctl-widget-refresh-now"
+        private const val SOON = "monctl-widget-refresh-soon"
         private val online = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
 
         fun schedule(context: Context) {
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 PERIODIC,
                 ExistingPeriodicWorkPolicy.KEEP,
-                PeriodicWorkRequestBuilder<RefreshWorker>(15, TimeUnit.MINUTES).setConstraints(online).build(),
+                // The first run waits a period: onEnabled asks for an immediate one too.
+                PeriodicWorkRequestBuilder<RefreshWorker>(15, TimeUnit.MINUTES).setConstraints(online)
+                    .setInitialDelay(15, TimeUnit.MINUTES).build(),
             )
         }
 
@@ -48,6 +51,16 @@ class RefreshWorker(context: Context, params: WorkerParameters) : CoroutineWorke
                 ONCE,
                 ExistingWorkPolicy.REPLACE,
                 OneTimeWorkRequestBuilder<RefreshWorker>().setConstraints(online).build(),
+            )
+        }
+
+        /** One more read a few seconds from now: for a panel still settling after wake or sleep. */
+        fun soon(context: Context) {
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                SOON,
+                ExistingWorkPolicy.REPLACE,
+                OneTimeWorkRequestBuilder<RefreshWorker>().setConstraints(online)
+                    .setInitialDelay(4, TimeUnit.SECONDS).build(),
             )
         }
 

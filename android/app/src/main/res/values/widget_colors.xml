@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The widget's copy of LightPalette (ui/Theme.kt). values-night holds DarkPalette.
+     Resources rather than Glance day/night providers so the drawables can use them too. -->
+<resources>
+    <color name="w_bg">#FFF6F7F9</color>
+    <color name="w_bg_top">#FFE6EAF4</color>
+    <color name="w_tile">#0F000000</color>
+    <color name="w_lit">#FF17181C</color>
+    <color name="w_on_lit">#FFFFFFFF</color>
+    <!-- onLit at 62%, the tile subtitle alpha. -->
+    <color name="w_on_lit_sub">#9EFFFFFF</color>
+    <color name="w_fg">#FF111114</color>
+    <color name="w_fg_sub">#9E111114</color>
+    <!-- fg at 50%: a dim tile (monitor asleep or not answering). -->
+    <color name="w_fg_dim">#80111114</color>
+    <color name="w_muted">#FF5F6470</color>
+    <color name="w_subtle">#FF80858F</color>
+    <color name="w_success">#FF0A7D5B</color>
+    <color name="w_danger">#FFD93636</color>
+</resources>
