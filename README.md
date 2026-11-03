@@ -177,7 +177,8 @@ Files: `webui/server.py` (stdlib only) and `app/` (the React build).
 
 `android/` is a Kotlin/Compose app with a home-screen widget:
 on/off, brightness, volume, mute, input (DisplayPort, HDMI 1, HDMI 2), and start/stop
-for the AirPlay-display watcher. It talks to
+for the AirPlay-display watcher. It also has the Mac's own controls (the MTMR
+Touch Bar set) and a screen preview. It talks to
 `server.py` on the LAN when the phone is on home Wi-Fi and through a
 Cloudflare tunnel otherwise.
 
@@ -233,6 +234,45 @@ the widget's −/+ buttons send since its cached state can be 15 minutes old),
 `KeepAlive`, so killing it would only respawn it); start clears it and
 kickstarts `com.dell.airplaywatch` if the process has died. Both are
 idempotent, unlike the body-less toggle the other front ends use.
+
+**The Mac (the Touch Bar set).** What the MTMR Touch Bar shows and does, for
+the phone: battery, Mac volume and mute, built-in display brightness, Wi-Fi
+(On, Scan, Join) and AirPlay (Scan, Connect, Disconnect, plus the watcher).
+`GET /api/mac` returns all the readouts in one call (about 1 s; `osascript`
+for the volume is most of it). The actions are `POST /api/mac/volume
+{value|muted}`, `/api/mac/brightness {value}`, `/api/wifi/on`,
+`/api/wifi/scan`, `/api/wifi/join {ssid, password?}`, `/api/airplay/scan`,
+`/api/airplay/connect {mac, name}` and `/api/airplay/disconnect`. Each one runs
+a fixed `~/bin` script with validated arguments, never a command built from the
+request or read from `items.json`. The Touch Bar's own menu scripts aren't
+used, because they rewrite `items.json` and restart MTMR. `airplay_pick.sh` and
+`airplay_off.sh` skip that restart when `MONCTL_NO_MENU` is set.
+
+- Joining a remembered network uses `wifi_join.sh`, which reads the password
+  from the System keychain. A new network takes a password typed on the phone.
+  That password crosses the LAN in cleartext, or the tunnel over HTTPS.
+- Switching the Mac's Wi-Fi cuts the connection the phone may be using. The app
+  warns, then looks for the Mac again on whichever route answers. There is
+  deliberately no Wi-Fi Off, as on the Touch Bar.
+- The widget's large size adds a `MAC 80% ⚡ · <SSID>` line.
+
+**Screen preview.** `GET /api/screen/displays` lists the displays the server
+can capture. Mirrored displays (the AirPlay Pad mirroring the built-in) are
+folded into the one they mirror. `GET /api/screen?d=<id>&w=<px>` returns a JPEG
+of that display's rectangle (`screencapture -R`, then `sips`). It takes about
+0.9 s and is 50–200 KB at 1280 px. The app shows a thumbnail and a full-screen
+live view: about one frame a second, only while the app is in front, pinch to
+zoom. Limits:
+
+- **LAN-only.** Through the tunnel the server answers 403 unless
+  `~/.config/monctl/screen_remote` exists.
+- **Never wakes the display.** An asleep display answers 409.
+- **It shows only what the Mac draws.** An HDMI source on the Acer isn't
+  visible.
+- **It needs Screen Recording permission** for the Python that runs the server
+  (Xcode's `Python.app` under the LaunchAgent). The first request asks for it.
+  Grant it, then restart the server. macOS 15 also asks you to re-approve
+  screen recording from time to time.
 
 **Limits:**
 
