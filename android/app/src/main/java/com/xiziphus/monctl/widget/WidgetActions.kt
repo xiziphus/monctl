@@ -64,6 +64,7 @@ object WidgetActions {
     }
 
     suspend fun refresh(context: Context) = run(context) { cfg ->
+        (MonctlClient.mac(cfg) as? Reply.Ok)?.let { WidgetStore.publishMac(context, it.value) }
         MonctlClient.remote(cfg).also { WidgetStore.publish(context, it) }
     }
 

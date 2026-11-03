@@ -77,6 +77,9 @@ object MonctlClient {
         .connectTimeout(8, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
+    // Wi-Fi joins (up to 45 s on the Mac) and AirPlay scans (~10 s).
+    private val slowExtraSec = 60L
+
     private val helloHttp = base.newBuilder()
         .connectTimeout(700, TimeUnit.MILLISECONDS)
         .readTimeout(1500, TimeUnit.MILLISECONDS)
@@ -161,6 +164,50 @@ object MonctlClient {
         }
     }
 
+    // --- the Mac itself (the MTMR Touch Bar set) ---------------------------
+
+    suspend fun mac(cfg: Config): Reply<MacState> =
+        call(cfg, get("/api/mac"), retryable = true) { json.decodeFromString<MacState>(it) }
+
+    suspend fun macVolume(cfg: Config, value: Int? = null, muted: Boolean? = null): Reply<Unit> =
+        call(cfg, post("/api/mac/volume", buildJsonObject {
+            value?.let { put("value", it) }
+            muted?.let { put("muted", it) }
+        })) { }
+
+    suspend fun macBrightness(cfg: Config, value: Int): Reply<Unit> =
+        call(cfg, post("/api/mac/brightness", buildJsonObject { put("value", value) })) { }
+
+    suspend fun wifiOn(cfg: Config): Reply<Unit> = call(cfg, post("/api/wifi/on", buildJsonObject { })) { }
+
+    suspend fun wifiScan(cfg: Config): Reply<NetworkList> =
+        call(cfg, post("/api/wifi/scan", buildJsonObject { }), slow = true) { json.decodeFromString<NetworkList>(it) }
+
+    /** A remembered network joins with its keychain password; a new one needs [password]. */
+    suspend fun wifiJoin(cfg: Config, ssid: String, password: String?): Reply<Unit> =
+        call(cfg, post("/api/wifi/join", buildJsonObject {
+            put("ssid", ssid)
+            password?.let { put("password", it) }
+        }), slow = true) { }
+
+    suspend fun airplayScan(cfg: Config): Reply<DeviceList> =
+        call(cfg, post("/api/airplay/scan", buildJsonObject { }), slow = true) { json.decodeFromString<DeviceList>(it) }
+
+    suspend fun airplayConnect(cfg: Config, dev: AirPlayDevice): Reply<Unit> =
+        call(cfg, post("/api/airplay/connect", buildJsonObject { put("mac", dev.mac); put("name", dev.name) }), slow = true) { }
+
+    suspend fun airplayDisconnect(cfg: Config): Reply<Unit> =
+        call(cfg, post("/api/airplay/disconnect", buildJsonObject { }), slow = true) { }
+
+    // --- screen preview (LAN-only unless the Mac opts the tunnel in) --------
+
+    suspend fun screenDisplays(cfg: Config): Reply<DisplayList> =
+        call(cfg, get("/api/screen/displays"), retryable = true) { json.decodeFromString<DisplayList>(it) }
+
+    /** One JPEG frame of display [id], scaled to [width] px. */
+    suspend fun screen(cfg: Config, id: Long, width: Int): Reply<ByteArray> =
+        callRaw(cfg, get("/api/screen?d=$id&w=$width"), retryable = false, slow = false) { it }
+
     /** Settings' "Test" button: try each configured route on its own, uncached. */
     suspend fun test(cfg: Config): List<Pair<Route, Reply<DisplayReply>>> = withContext(Dispatchers.IO) {
         buildList {
@@ -198,16 +245,25 @@ object MonctlClient {
         cfg: Config,
         build: (String) -> Request,
         retryable: Boolean = false,
+        slow: Boolean = false,
         parse: (String) -> T,
+    ): Reply<T> = callRaw(cfg, build, retryable, slow) { parse(it.decodeToString()) }
+
+    private suspend fun <T> callRaw(
+        cfg: Config,
+        build: (String) -> Request,
+        retryable: Boolean,
+        slow: Boolean,
+        parse: (ByteArray) -> T,
     ): Reply<T> = withContext(Dispatchers.IO) {
         if (!cfg.isConfigured) return@withContext Reply.NotConfigured
         val route = resolve(cfg) ?: return@withContext Reply.Unreachable("not on the LAN and no tunnel set")
-        val r = once(route, cfg, build, parse)
+        val r = exchange(route, cfg, build, slow, parse)
         if (r is Reply.Unreachable) {
             forgetRoute()
             if (retryable) {
                 val other = resolve(cfg)
-                if (other != null && other != route) return@withContext once(other, cfg, build, parse)
+                if (other != null && other != route) return@withContext exchange(other, cfg, build, slow, parse)
             }
         }
         r
@@ -240,15 +296,26 @@ object MonctlClient {
         false
     }
 
-    private fun <T> once(route: Route, cfg: Config, build: (String) -> Request, parse: (String) -> T): Reply<T> {
-        val http = if (route == Route.LAN) lanHttp else tunnelHttp
+    private fun <T> once(route: Route, cfg: Config, build: (String) -> Request, parse: (String) -> T): Reply<T> =
+        exchange(route, cfg, build, slow = false) { parse(it.decodeToString()) }
+
+    private fun <T> exchange(
+        route: Route,
+        cfg: Config,
+        build: (String) -> Request,
+        slow: Boolean,
+        parse: (ByteArray) -> T,
+    ): Reply<T> {
+        val fast = if (route == Route.LAN) lanHttp else tunnelHttp
+        val http = if (slow) fast.newBuilder().readTimeout(slowExtraSec, TimeUnit.SECONDS).build() else fast
         return try {
             val req = build(baseFor(cfg, route)).newBuilder().header("X-Monctl-Token", cfg.token).build()
             http.newCall(req).execute().use { resp ->
-                val body = resp.body?.string().orEmpty()
-                val err = runCatching { json.decodeFromString<ErrorReply>(body).error }.getOrNull()
+                val bytes = resp.body?.bytes() ?: ByteArray(0)
+                val err = if (resp.code == 200) null
+                else runCatching { json.decodeFromString<ErrorReply>(bytes.decodeToString()).error }.getOrNull()
                 when {
-                    resp.code == 200 -> Reply.Ok(parse(body), route)
+                    resp.code == 200 -> Reply.Ok(parse(bytes), route)
                     resp.code == 401 -> Reply.Unauthorized
                     resp.code == 429 -> Reply.LockedOut
                     err != null -> Reply.Failed(err)

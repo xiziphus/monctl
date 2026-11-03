@@ -197,6 +197,8 @@ fun VDialog(
     danger: Boolean = false,
     busy: Boolean = false,
     dismiss: String = "Cancel",
+    confirmEnabled: Boolean = true,
+    body: (@Composable () -> Unit)? = null,
 ) {
     val c = V.c
     AlertDialog(
@@ -206,8 +208,40 @@ fun VDialog(
         tonalElevation = 0.dp,
         modifier = Modifier.border(1.dp, c.borderStrong, RectangleShape),
         title = { Text(title, fontFamily = Geist, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = c.fg) },
-        text = { Text(text, fontFamily = Geist, fontSize = 13.sp, color = c.muted, textAlign = TextAlign.Start) },
-        confirmButton = { VButton(confirm, onConfirm, primary = true, danger = danger, enabled = !busy) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(text, fontFamily = Geist, fontSize = 13.sp, color = c.muted, textAlign = TextAlign.Start)
+                body?.invoke()
+            }
+        },
+        confirmButton = { VButton(confirm, onConfirm, primary = true, danger = danger, enabled = !busy && confirmEnabled) },
         dismissButton = { VButton(dismiss, onDismiss, enabled = !busy) },
     )
+}
+
+/** A tappable list row: name on the left, a mono tag (✓, CURRENT) on the right. */
+@Composable
+fun VRow(text: String, tag: String? = null, enabled: Boolean = true, onClick: () -> Unit) {
+    val c = V.c
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .border(1.dp, c.border, RectangleShape)
+            .alpha(if (enabled) 1f else 0.4f)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text, fontFamily = Geist, fontSize = 13.sp, color = c.fg, maxLines = 1, modifier = Modifier.weight(1f))
+        tag?.let { Text(it, style = LabelMono, color = c.muted, modifier = Modifier.padding(start = 8.dp)) }
+    }
+}
+
+/** Label / value pair on one line, for readouts. */
+@Composable
+fun VReadout(label: String, value: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        Text(label.uppercase(), style = LabelMono, color = V.c.subtle, modifier = Modifier.width(72.dp))
+        Text(value, style = ValueMono, color = V.c.fg, maxLines = 1, modifier = Modifier.weight(1f))
+    }
 }

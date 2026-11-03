@@ -110,6 +110,14 @@ private fun Content(context: Context, st: WidgetStore.State) {
                     modifier = GlanceModifier.padding(horizontal = 6.dp).clickable(actionRunCallback<RefreshAction>()),
                 )
             }
+            macLine(st)?.let {
+                Text(
+                    it,
+                    style = TextStyle(color = W.muted, fontSize = 11.sp, fontFamily = FontFamily.Monospace),
+                    maxLines = 1,
+                    modifier = GlanceModifier.fillMaxWidth().padding(horizontal = 2.dp),
+                )
+            }
             Spacer(GlanceModifier.height(3.dp))
         }
 
@@ -159,6 +167,13 @@ private fun summary(st: WidgetStore.State): String {
             s.volume?.let { if (s.muted == true) "🔇" else "🔊 ${it.cur}" },
         ).joinToString(" · ") + where
     }
+}
+
+/** "MAC 80% ⚡ · GetYourOwn-5G": the Touch Bar's battery and Wi-Fi readouts. */
+private fun macLine(st: WidgetStore.State): String? {
+    val m = st.mac ?: return null
+    val parts = listOfNotNull(m.battery?.label, m.wifi?.label)
+    return if (parts.isEmpty()) null else "MAC " + parts.joinToString(" · ")
 }
 
 private fun nudge(code: String, delta: Int): Action =

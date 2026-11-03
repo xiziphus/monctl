@@ -1,11 +1,18 @@
 package com.xiziphus.monctl.ui
 
 import android.app.Application
+import android.graphics.BitmapFactory
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.xiziphus.monctl.data.Config
 import com.xiziphus.monctl.data.Settings
+import com.xiziphus.monctl.net.AirPlayDevice
 import com.xiziphus.monctl.net.AppVersion
+import com.xiziphus.monctl.net.MacState
+import com.xiziphus.monctl.net.Network
+import com.xiziphus.monctl.net.ScreenDisplay
 import com.xiziphus.monctl.net.MonctlClient
 import com.xiziphus.monctl.update.Updater
 import com.xiziphus.monctl.net.Reply
@@ -13,12 +20,15 @@ import com.xiziphus.monctl.net.Route
 import com.xiziphus.monctl.net.Snapshot
 import com.xiziphus.monctl.net.message
 import com.xiziphus.monctl.widget.WidgetStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class UiState(
     val config: Config? = null,
@@ -31,7 +41,23 @@ data class UiState(
     val update: AppVersion? = null,
     /** "Downloading 40%" / "Installing…" while an update runs. */
     val updateProgress: String? = null,
-)
+
+    // The Mac (the Touch Bar set).
+    val mac: MacState? = null,
+    val networks: List<Network>? = null,
+    val scanningWifi: Boolean = false,
+    val devices: List<AirPlayDevice>? = null,
+    val scanningAirplay: Boolean = false,
+
+    // Screen preview.
+    val displays: List<ScreenDisplay>? = null,
+    val screenId: Long? = null,
+    val thumb: ImageBitmap? = null,
+    /** Why there is no preview: LAN-only, no permission, display asleep. */
+    val screenNote: String? = null,
+) {
+    val screen: ScreenDisplay? get() = displays?.firstOrNull { it.id == screenId }
+}
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val ctx get() = getApplication<Application>()
@@ -44,6 +70,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // round-trip is ~200 ms, so anything faster just queues on the Mac.
     private val brightness = Channel<Int>(Channel.CONFLATED)
     private val volume = Channel<Int>(Channel.CONFLATED)
+    private val macBrightness = Channel<Int>(Channel.CONFLATED)
+    private val macVolume = Channel<Int>(Channel.CONFLATED)
 
     init {
         viewModelScope.launch {
@@ -53,16 +81,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 if (changed && c.isConfigured) refresh()
             }
         }
-        drain(brightness, "10")
-        drain(volume, "62")
+        drain(brightness) { cfg, v -> MonctlClient.set(cfg, "10", v) }
+        drain(volume) { cfg, v -> MonctlClient.set(cfg, "62", v) }
+        drain(macBrightness) { cfg, v -> MonctlClient.macBrightness(cfg, v) }
+        drain(macVolume) { cfg, v -> MonctlClient.macVolume(cfg, value = v) }
     }
 
-    private fun drain(ch: Channel<Int>, code: String) = viewModelScope.launch {
+    private fun drain(ch: Channel<Int>, send: suspend (Config, Int) -> Reply<*>) = viewModelScope.launch {
         var last: Int? = null
         for (v in ch) {
             if (v == last) continue
             val cfg = _ui.value.config ?: continue
-            val r = MonctlClient.set(cfg, code, v)
+            val r = send(cfg, v)
             if (r is Reply.Ok) last = v else report(r)
             delay(130)
         }
@@ -73,14 +103,57 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (!cfg.isConfigured || _ui.value.loading) return
         viewModelScope.launch {
             _ui.update { it.copy(loading = true) }
+            // The monitor (DDC) and the Mac readouts are independent and each
+            // takes ~1 s on the Mac, so ask for both at once.
+            val macJob = async { MonctlClient.mac(cfg) }
             val r = MonctlClient.remote(cfg)
+            val m = macJob.await()
             _ui.update {
-                if (r is Reply.Ok) it.copy(snapshot = r.value, route = r.route, loading = false, message = null)
-                else it.copy(loading = false, message = r.message())
+                val base = if (r is Reply.Ok) it.copy(snapshot = r.value, route = r.route, message = null)
+                else it.copy(message = r.message())
+                base.copy(loading = false, mac = (m as? Reply.Ok)?.value ?: base.mac)
             }
             WidgetStore.publish(ctx, r)
-            if (r is Reply.Ok) checkForUpdate(cfg)
+            if (m is Reply.Ok) WidgetStore.publishMac(ctx, m.value)
+            if (r is Reply.Ok) {
+                checkForUpdate(cfg)
+                refreshScreen(cfg)
+            }
         }
+    }
+
+    private suspend fun refreshScreen(cfg: Config) {
+        when (val d = MonctlClient.screenDisplays(cfg)) {
+            is Reply.Ok -> {
+                val list = d.value.displays
+                val keep = _ui.value.screenId?.takeIf { id -> list.any { it.id == id } }
+                // Default to the Acer: this app is about that monitor.
+                val pick = keep ?: (list.firstOrNull { !it.builtin } ?: list.firstOrNull())?.id
+                _ui.update { it.copy(displays = list, screenId = pick) }
+                if (!d.value.permission) {
+                    _ui.update { it.copy(thumb = null, screenNote = "Allow Screen Recording for the server on the Mac.") }
+                } else if (pick != null) {
+                    loadThumb(cfg, pick)
+                }
+            }
+            else -> _ui.update { it.copy(displays = null, thumb = null, screenNote = d.message()) }
+        }
+    }
+
+    private suspend fun loadThumb(cfg: Config, id: Long) {
+        when (val f = MonctlClient.screen(cfg, id, 720)) {
+            is Reply.Ok -> {
+                val img = decodeFrame(f.value)
+                _ui.update { it.copy(thumb = img, screenNote = if (img == null) "Couldn't decode the frame." else null) }
+            }
+            else -> _ui.update { it.copy(thumb = null, screenNote = f.message()) }
+        }
+    }
+
+    fun pickScreen(id: Long) {
+        val cfg = _ui.value.config ?: return
+        _ui.update { it.copy(screenId = id, thumb = null) }
+        viewModelScope.launch { loadThumb(cfg, id) }
     }
 
     private suspend fun checkForUpdate(cfg: Config) {
@@ -159,6 +232,93 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         r
     }
 
+    // --- the Mac ----------------------------------------------------------
+
+    fun setMacBrightness(v: Int) {
+        _ui.update { s -> s.copy(mac = s.mac?.copy(brightness = v)) }
+        macBrightness.trySend(v)
+    }
+
+    fun setMacVolume(v: Int) {
+        _ui.update { s -> s.copy(mac = s.mac?.copy(volume = v)) }
+        macVolume.trySend(v)
+    }
+
+    fun toggleMacMute() = act { cfg ->
+        val muted = _ui.value.mac?.muted == true
+        val r = MonctlClient.macVolume(cfg, muted = !muted)
+        if (r is Reply.Ok) _ui.update { s -> s.copy(mac = s.mac?.copy(muted = !muted)) }
+        r
+    }
+
+    fun wifiOn() = act { cfg -> MonctlClient.wifiOn(cfg) }
+
+    fun scanWifi() {
+        val cfg = _ui.value.config ?: return
+        if (_ui.value.scanningWifi) return
+        viewModelScope.launch {
+            _ui.update { it.copy(scanningWifi = true) }
+            val r = MonctlClient.wifiScan(cfg)
+            _ui.update {
+                if (r is Reply.Ok) it.copy(scanningWifi = false, networks = r.value.networks)
+                else it.copy(scanningWifi = false, message = r.message())
+            }
+        }
+    }
+
+    /**
+     * When the phone reaches the Mac over the same Wi-Fi, switching the Mac's
+     * network cuts this very request: no reply is not a failure. Forget the
+     * route and look again through whichever path answers.
+     */
+    fun joinWifi(ssid: String, password: String?) {
+        val cfg = _ui.value.config ?: return
+        viewModelScope.launch {
+            _ui.update { it.copy(working = true, networks = null) }
+            val r = MonctlClient.wifiJoin(cfg, ssid, password)
+            _ui.update { it.copy(working = false) }
+            when (r) {
+                is Reply.Ok -> refresh()
+                is Reply.Unreachable -> {
+                    _ui.update { it.copy(message = "Lost the Mac while it joined $ssid. Looking for it again…") }
+                    MonctlClient.forgetRoute()
+                    delay(6000)
+                    refresh()
+                }
+                else -> report(r)
+            }
+        }
+    }
+
+    fun closeWifiList() = _ui.update { it.copy(networks = null) }
+
+    fun scanAirplay() {
+        val cfg = _ui.value.config ?: return
+        if (_ui.value.scanningAirplay) return
+        viewModelScope.launch {
+            _ui.update { it.copy(scanningAirplay = true) }
+            val r = MonctlClient.airplayScan(cfg)
+            _ui.update {
+                if (r is Reply.Ok) it.copy(scanningAirplay = false, devices = r.value.devices)
+                else it.copy(scanningAirplay = false, message = r.message())
+            }
+        }
+    }
+
+    fun connectAirplay(dev: AirPlayDevice) = act { cfg ->
+        val r = MonctlClient.airplayConnect(cfg, dev)
+        if (r is Reply.Ok) _ui.update { it.copy(devices = null) }
+        r
+    }
+
+    fun disconnectAirplay() = act { cfg ->
+        val r = MonctlClient.airplayDisconnect(cfg)
+        if (r is Reply.Ok) _ui.update { it.copy(devices = null) }
+        r
+    }
+
+    fun closeAirplayList() = _ui.update { it.copy(devices = null) }
+
     private fun act(block: suspend (Config) -> Reply<*>) {
         val cfg = _ui.value.config ?: return
         viewModelScope.launch {
@@ -172,4 +332,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun report(r: Reply<*>) = _ui.update { it.copy(message = r.message()) }
 
     fun dismissMessage() = _ui.update { it.copy(message = null) }
+}
+
+/** JPEG bytes to an image, off the main thread. null if it isn't one. */
+suspend fun decodeFrame(bytes: ByteArray): ImageBitmap? = withContext(Dispatchers.Default) {
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
 }

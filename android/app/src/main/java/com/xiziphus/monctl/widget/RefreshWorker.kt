@@ -12,6 +12,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.xiziphus.monctl.data.Settings
 import com.xiziphus.monctl.net.MonctlClient
+import com.xiziphus.monctl.net.Reply
 import java.util.concurrent.TimeUnit
 
 /**
@@ -22,7 +23,10 @@ import java.util.concurrent.TimeUnit
 class RefreshWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         val cfg = Settings.load(applicationContext)
-        if (cfg.isConfigured) WidgetStore.publish(applicationContext, MonctlClient.remote(cfg))
+        if (cfg.isConfigured) {
+            WidgetStore.publish(applicationContext, MonctlClient.remote(cfg))
+            (MonctlClient.mac(cfg) as? Reply.Ok)?.let { WidgetStore.publishMac(applicationContext, it.value) }
+        }
         return Result.success()
     }
 

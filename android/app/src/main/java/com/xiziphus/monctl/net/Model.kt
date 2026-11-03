@@ -94,3 +94,84 @@ data class DisplayReply(val asleep: Boolean = false)
 
 @Serializable
 internal data class ErrorReply(val error: String? = null)
+
+/**
+ * GET /api/mac: the Mac's own readouts, the MTMR Touch Bar set. Every field
+ * is nullable because each one comes from a separate tool on the Mac.
+ */
+@Serializable
+data class MacState(
+    val battery: Battery? = null,
+    val volume: Int? = null,
+    val muted: Boolean? = null,
+    /** Built-in display, 0..100. null with the lid closed. */
+    val brightness: Int? = null,
+    val lid: String? = null,
+    val wifi: WifiState? = null,
+    val airplay: AirPlayState? = null,
+    val watcher: WatcherState? = null,
+)
+
+@Serializable
+data class Battery(
+    val pct: Int,
+    val ac: Boolean = false,
+    val charging: Boolean = false,
+    val status: String = "",
+) {
+    val label: String get() = "$pct%" + if (charging) " ⚡" else if (ac) " AC" else ""
+}
+
+@Serializable
+data class WifiState(
+    val power: Boolean = false,
+    val ssid: String? = null,
+    val wired: Boolean = false,
+    val online: Boolean = false,
+) {
+    /** What the Touch Bar's blue indicator shows. */
+    val label: String
+        get() = when {
+            ssid != null -> ssid
+            !power -> "off"
+            wired -> "wired"
+            else -> "on, not joined"
+        }
+}
+
+@Serializable
+data class AirPlayState(
+    val status: String? = null,
+    val target: String? = null,
+    @SerialName("target_mac") val targetMac: String? = null,
+    val paused: Boolean = false,
+)
+
+@Serializable
+data class Network(val ssid: String, val remembered: Boolean = false, val current: Boolean = false)
+
+@Serializable
+data class NetworkList(val networks: List<Network> = emptyList())
+
+@Serializable
+data class AirPlayDevice(val mac: String, val name: String, val current: Boolean = false)
+
+@Serializable
+data class DeviceList(val devices: List<AirPlayDevice> = emptyList())
+
+/** A display the server can capture. Mirrored displays are folded into the one they mirror. */
+@Serializable
+data class ScreenDisplay(
+    /** CGDirectDisplayID: a uint32, so it can overflow Int. */
+    val id: Long,
+    val name: String,
+    val builtin: Boolean = false,
+    val main: Boolean = false,
+    @SerialName("mirrored_on") val mirroredOn: Int = 0,
+    val asleep: Boolean = false,
+    val w: Int = 0,
+    val h: Int = 0,
+)
+
+@Serializable
+data class DisplayList(val displays: List<ScreenDisplay> = emptyList(), val permission: Boolean = false)

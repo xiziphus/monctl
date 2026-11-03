@@ -32,8 +32,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xiziphus.monctl.net.InputOption
+import com.xiziphus.monctl.net.Network
 import com.xiziphus.monctl.net.Snapshot
-import com.xiziphus.monctl.net.WatcherState
 import com.xiziphus.monctl.update.Updater
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -41,6 +41,8 @@ import com.xiziphus.monctl.update.Updater
 fun MainScreen(ui: UiState, vm: MainViewModel, onSettings: () -> Unit) {
     var confirm by remember { mutableStateOf<InputOption?>(null) }
     var confirmHardOff by remember { mutableStateOf(false) }
+    var join by remember { mutableStateOf<Network?>(null) }
+    var viewing by remember { mutableStateOf(false) }
     val c = V.c
 
     Column(Modifier.fillMaxSize().background(c.bg).statusBarsPadding().navigationBarsPadding()) {
@@ -82,8 +84,12 @@ fun MainScreen(ui: UiState, vm: MainViewModel, onSettings: () -> Unit) {
                         modifier = Modifier.padding(start = 10.dp),
                     )
                 }
+                ScreenSection(ui, vm::pickScreen) { viewing = true }
+
                 // On the Mac, not the monitor: shown whatever state the panel is in.
-                s.watcher?.takeIf { it.installed }?.let { WatcherSection(it, on, vm::setWatcher) }
+                MacSection(ui.mac, vm, on)
+                WifiSection(ui.mac, ui.networks, ui.scanningWifi, on, vm) { join = it }
+                AirplaySection(ui.mac, ui, on, vm)
             }
         }
     }
@@ -96,6 +102,18 @@ fun MainScreen(ui: UiState, vm: MainViewModel, onSettings: () -> Unit) {
             onConfirm = { vm.setInput(opt.code); confirm = null },
             onDismiss = { confirm = null },
         )
+    }
+    join?.let { n ->
+        JoinDialog(
+            n, current = ui.mac?.wifi?.ssid, route = ui.route,
+            onJoin = { pw -> vm.joinWifi(n.ssid, pw); join = null },
+            onDismiss = { join = null },
+        )
+    }
+    val cfg = ui.config
+    val start = ui.screenId
+    if (viewing && cfg != null && start != null) {
+        ScreenViewer(cfg, ui.displays.orEmpty(), start) { viewing = false }
     }
     if (confirmHardOff) {
         VDialog(
@@ -211,20 +229,5 @@ private fun LevelSection(
 ) {
     VSection(label, value = cur?.toString() ?: "—", trailing = trailing) {
         VSlider(cur ?: 50, max ?: 100, onChange)
-    }
-}
-
-@Composable
-private fun WatcherSection(w: WatcherState, enabled: Boolean, onSet: (Boolean) -> Unit) {
-    val status = when {
-        !w.running -> "not running"
-        w.paused -> "stopped"
-        else -> "running"
-    }
-    VSection("AirPlay watcher", value = status) {
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-            VButton("Start", { onSet(true) }, Modifier.weight(1f), primary = !w.active, enabled = enabled && !w.active)
-            VButton("Stop", { onSet(false) }, Modifier.weight(1f), primary = w.active, enabled = enabled && w.active)
-        }
     }
 }

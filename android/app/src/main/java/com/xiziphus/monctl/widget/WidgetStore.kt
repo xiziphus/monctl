@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.glance.appwidget.updateAll
+import com.xiziphus.monctl.net.MacState
 import com.xiziphus.monctl.net.MonctlClient
 import com.xiziphus.monctl.net.Reply
 import com.xiziphus.monctl.net.Route
@@ -31,12 +32,15 @@ object WidgetStore {
         /** Non-null overrides the summary line: an error, or "…" while an action runs. */
         val status: String? = null,
         val updatedAt: Long = 0,
+        /** The Mac's readouts (battery, Wi-Fi); refreshed with the app and the 15-min worker. */
+        val mac: MacState? = null,
     )
 
     private val SNAPSHOT = stringPreferencesKey("snapshot")
     private val ROUTE = stringPreferencesKey("route")
     private val STATUS = stringPreferencesKey("status")
     private val AT = longPreferencesKey("at")
+    private val MAC = stringPreferencesKey("mac")
 
     fun flow(context: Context): Flow<State> = context.widgetStore.data.map { p ->
         State(
@@ -44,6 +48,7 @@ object WidgetStore {
             route = p[ROUTE]?.let { runCatching { Route.valueOf(it) }.getOrNull() },
             status = p[STATUS]?.takeIf { it.isNotEmpty() },
             updatedAt = p[AT] ?: 0,
+            mac = p[MAC]?.let { runCatching { MonctlClient.json.decodeFromString<MacState>(it) }.getOrNull() },
         )
     }
 
@@ -61,6 +66,11 @@ object WidgetStore {
                 p[STATUS] = reply.shortMessage()
             }
         }
+        MonctlWidget().updateAll(context)
+    }
+
+    suspend fun publishMac(context: Context, mac: MacState) {
+        context.widgetStore.edit { it[MAC] = MonctlClient.json.encodeToString(MacState.serializer(), mac) }
         MonctlWidget().updateAll(context)
     }
 
