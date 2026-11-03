@@ -44,8 +44,9 @@ let AUTH_FAIL: UInt32 = 0xFFFF_FFFF
 /// never sent this way.
 let ALLOWED: Set<String> = [
     "GET /api/hello", "GET /api/remote", "GET /api/mac", "GET /api/display",
-    "GET /api/watcher", "GET /api/app/version",
+    "GET /api/watcher", "GET /api/watcher/config", "GET /api/app/version",
     "POST /api/set", "POST /api/nudge", "POST /api/display", "POST /api/watcher",
+    "POST /api/watcher/config", "POST /api/watcher/test",
     "POST /api/mac/volume", "POST /api/mac/brightness",
     "POST /api/wifi/on", "POST /api/wifi/scan", "POST /api/wifi/join",
     "POST /api/airplay/scan", "POST /api/airplay/connect", "POST /api/airplay/disconnect",

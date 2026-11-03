@@ -341,6 +341,122 @@ def watcher_set(want_on):
     return True
 
 
+# Watcher settings: ~/.config/monctl/watcher.conf, KEY=value lines that
+# ~/bin/airplay_cue.sh parses (allow-list, never sourced) on every watcher loop,
+# so a change applies within one 5 s tick without a restart. The JSON names
+# here map 1:1 onto the file's keys. Values are validated here and again by the
+# script, which keeps its default for anything it doesn't like.
+WATCH_CONF = os.path.expanduser("~/.config/monctl/watcher.conf")
+WATCH_CUE = os.path.expanduser("~/bin/airplay_cue.sh")
+WATCH_CONF_SPEC = {
+    # json key: (file key, default, validator)
+    "mode":        ("MODE", "spoken", ("spoken", "sounds", "off")),
+    "voice":       ("VOICE", "", "voice"),
+    "wifi_nag":    ("WIFI_NAG", 30, (10, 600)),
+    "lock_nag":    ("LOCK_NAG", 60, (15, 600)),
+    "reconnect":   ("RECONNECT", 15, (5, 120)),
+    "heal_after":  ("HEAL_AFTER", 6, (2, 30)),
+    "rescan":      ("RESCAN", 60, (30, 900)),
+    "local_audio": ("LOCAL_AUDIO", True, bool),
+    "acer_pause":  ("ACER_PAUSE", True, bool),
+    "lid_drop":    ("LID_DROP", True, bool),
+    "keep_mtmr":   ("KEEP_MTMR", True, bool),
+}
+_VOICES: dict = {"list": None}
+
+
+def say_voices():
+    """English voices `say` knows, cached: the list only changes with an OS install."""
+    if _VOICES["list"] is None:
+        out = _run(["/usr/bin/say", "-v", "?"], timeout=8) or ""
+        names = []
+        for line in out.splitlines():
+            m = re.match(r"^(.*?)\s+(en_[A-Z0-9]+)\s+#", line)
+            if m and re.fullmatch(r"[A-Za-z0-9 ._()-]{1,48}", m.group(1)):
+                names.append(m.group(1))
+        _VOICES["list"] = sorted(set(names), key=str.lower)
+    return _VOICES["list"]
+
+
+def watcher_config():
+    cfg = {k: d for k, (_, d, _) in WATCH_CONF_SPEC.items()}
+    by_file = {fk: k for k, (fk, _, _) in WATCH_CONF_SPEC.items()}
+    try:
+        with open(WATCH_CONF) as f:
+            for line in f:
+                fk, _, v = line.rstrip("\n").partition("=")
+                k = by_file.get(fk)
+                if k is None:
+                    continue
+                ok, val = _watch_value(k, v)
+                if ok:
+                    cfg[k] = val
+    except OSError:
+        pass
+    return cfg
+
+
+def _watch_value(key, raw):
+    """(ok, value) for one setting, from JSON or from the file's text form."""
+    _, _, rule = WATCH_CONF_SPEC[key]
+    if rule is bool:
+        if isinstance(raw, bool):
+            return True, raw
+        if raw in ("0", "1"):
+            return True, raw == "1"
+        return False, None
+    if rule == "voice":
+        # "" = the system voice. Otherwise one `say` lists, so nothing else
+        # ever reaches its -v argument.
+        return (True, raw) if isinstance(raw, str) and (raw == "" or raw in say_voices()) else (False, None)
+    if isinstance(rule, tuple) and isinstance(rule[0], str):
+        return (True, raw) if raw in rule else (False, None)
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return False, None
+    if isinstance(raw, bool):
+        return False, None
+    lo, hi = rule
+    return (True, n) if lo <= n <= hi else (False, None)
+
+
+def watcher_config_set(changes):
+    """Merge validated changes into the file. Returns (config, error)."""
+    cfg = watcher_config()
+    for k, v in changes.items():
+        if k not in WATCH_CONF_SPEC:
+            return None, f"unknown setting {k}"
+        ok, val = _watch_value(k, v)
+        if not ok:
+            return None, f"bad value for {k}"
+        cfg[k] = val
+    lines = []
+    for k, (fk, _, rule) in WATCH_CONF_SPEC.items():
+        v = cfg[k]
+        lines.append(f"{fk}={(1 if v else 0) if rule is bool else v}")
+    os.makedirs(os.path.dirname(WATCH_CONF), exist_ok=True)
+    tmp = WATCH_CONF + ".tmp"
+    with open(tmp, "w") as f:
+        f.write("# Written by monctl (webui/server.py). Read by ~/bin/airplay_cue.sh.\n")
+        f.write("\n".join(lines) + "\n")
+    os.replace(tmp, WATCH_CONF)
+    return cfg, None
+
+
+def watcher_test():
+    """Play one announcement the way the watcher would, with the saved settings."""
+    if not os.access(WATCH_CUE, os.R_OK):
+        return False
+    try:
+        subprocess.Popen(["/bin/bash", "-c",
+                          '. "$HOME/bin/airplay_cue.sh" && load_watch_conf && cue Tink "wifi still down."'],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except OSError:
+        return False
+
+
 def write_one(code, value):
     if not re.fullmatch(r"[0-9A-Fa-f]{2}", code):
         return False
@@ -703,12 +819,21 @@ def airplay_disconnect():
                     timeout=30, env={"MONCTL_NO_MENU": "1"}) is not None
 
 
+def audio_output():
+    """The Mac's current sound output device (Homebrew switchaudio-osx), or None."""
+    for p in ("/usr/local/bin/SwitchAudioSource", "/opt/homebrew/bin/SwitchAudioSource"):
+        if os.access(p, os.X_OK):
+            out = _run([p, "-c", "-t", "output"], timeout=4)
+            return out.strip() or None if out else None
+    return None
+
+
 def mac_snapshot():
     # Each readout is its own short subprocess; serially they add up to ~2 s.
     from concurrent.futures import ThreadPoolExecutor
     parts = {"battery": battery_state, "volume": mac_volume, "brightness": mac_brightness,
              "lid": lid_state, "wifi": wifi_state, "airplay": airplay_state,
-             "watcher": watcher_state}
+             "watcher": watcher_state, "output": audio_output}
     with ThreadPoolExecutor(len(parts)) as ex:
         futs = {k: ex.submit(f) for k, f in parts.items()}
         got = {k: f.result() for k, f in futs.items()}
@@ -1206,6 +1331,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/watcher":
             return self._send(200, watcher_state())
 
+        if u.path == "/api/watcher/config":
+            return self._send(200, {**watcher_config(), "voices": say_voices()})
+
         if u.path == "/api/mac":
             return self._send(200, mac_snapshot())
 
@@ -1542,6 +1670,27 @@ class Handler(BaseHTTPRequestHandler):
             st = display_power_state()
             return self._send(200, {"ok": True, "action": action, "state": st,
                                     "asleep": (st is not None and st < 4)})
+
+        if u.path == "/api/watcher/config":
+            # A partial object of the settings to change, e.g. {"mode":"off"}.
+            try:
+                body = self._body()
+            except (ValueError, json.JSONDecodeError):
+                return self._send(400, {"error": "bad json"})
+            if not isinstance(body, dict) or not body:
+                return self._send(400, {"error": "expected an object of settings"})
+            try:
+                cfg, err = watcher_config_set(body)
+            except OSError as e:
+                return self._send(500, {"error": f"couldn't save: {e.strerror}"})
+            if err or cfg is None:
+                return self._send(400, {"error": err})
+            return self._send(200, {**cfg, "voices": say_voices()})
+
+        if u.path == "/api/watcher/test":
+            if not watcher_test():
+                return self._send(503, {"error": "~/bin/airplay_cue.sh not installed"})
+            return self._send(200, {"ok": True})
 
         if u.path == "/api/watcher":
             # {"action": "start"|"stop"} is idempotent (the Android app). No
