@@ -1,0 +1,28 @@
+# Backups (kept on disk, never published)
+*.bak
+*.bak-*
+
+# Python
+__pycache__/
+
+# Compiled helpers (build.sh builds them from the .c sources)
+/ddcprobe
+/alsread
+/dimmer
+
+# Superseded React panel build output
+app/node_modules/
+app/dist/
+
+# Android
+android/.gradle/
+android/.idea/
+android/.kotlin/
+android/**/build/
+android/local.properties
+*.keystore
+*.jks
+*.apk
+
+# macOS
+.DS_Store

@@ -1,0 +1,573 @@
+#!/bin/zsh
+# monctl — DDC/CI control for external monitors on macOS
+#
+# Talks to the monitor over the DisplayPort AUX channel via ddcctl.
+# Verified against: Acer KG281K on USB-C -> DisplayPort (all 8 VCP controls respond).
+#
+#   monctl                 status of every control
+#   monctl b               print brightness
+#   monctl b 50            set brightness to 50
+#   monctl b +10           raise brightness by 10
+#   monctl b -10           lower brightness by 10
+#   monctl v 30            set volume
+#   monctl c 60            set contrast
+#   monctl mute|unmute|toggle
+#   monctl rgb 50 50 50    set red/green/blue gain
+#   monctl input           print current input source
+#
+# Extended controls (need ddcprobe, which reaches arbitrary VCP codes):
+#
+#   monctl all             every VCP code the monitor answers, with values
+#   monctl caps            raw DDC/CI capabilities string
+#   monctl source [dp|hdmi1|hdmi2]
+#   monctl temp [6500|7500|9300|user]      colour temperature preset
+#   monctl sat [colour [v]]                six-axis saturation
+#   monctl hue [colour [v]]                six-axis hue
+#   monctl black [r g b]                   per-channel black level
+#   monctl on | off | suspend              DPMS power state (`standby` = `off`)
+#   monctl hardoff [in <min>|cancel|status]  power the panel down as if you
+#                                          pressed its button -- LED out, DDC
+#                                          bus gone, and ONLY that button
+#                                          brings it back
+#   monctl reset [color|brightness|all]    factory restores
+#   monctl hours                           lifetime power-on hours
+#   monctl vcp <hex> [value]               raw VCP escape hatch
+#   monctl als                             ambient light in lux
+#   monctl lid                             lid open/closed (auto-brightness gate)
+#   monctl autostart [on|off|status]       start the web panel at login
+#   monctl auto [--dry-run]                auto-brightness from the light sensor
+#
+# The display drops its DDC bus while it sleeps, so a sleeping screen makes
+# every command here fail. When that happens monctl wakes the display once and
+# retries, and says it did. Set MONCTL_NO_WAKE=1 to forbid that -- background
+# pollers should, since a status read that lights up a dark room is worse than
+# one that fails.
+#
+# Env:
+#   MONCTL_DISPLAY   ddcctl display index (default 1)
+#   DDCCTL           path to ddcctl binary
+#   MONCTL_NO_WAKE   never wake the display to reach the bus
+
+emulate -L zsh
+setopt err_return pipe_fail
+
+# Helper binaries live beside the REAL script (~/monctl/), reachable on an
+# interactive PATH only because ~/bin is on it. A Shortcut, a LaunchAgent and
+# launchd all inherit a bare PATH that has neither -- and `command -v` returns
+# 1 when it finds nothing, which under err_return (set just above) aborts the
+# whole script on this very line, before any verb runs, printing nothing.
+#
+# That is precisely how "hey Siri, turn off the monitor in 15 minutes" failed:
+# exit 1, no output, nothing scheduled, while the identical command from a
+# terminal worked. Resolve by LOCATION first, fall back to PATH, and never let
+# the lookup itself be the thing that kills the run.
+_HERE=${0:A:h}
+_find() {
+  local n=$1 d
+  for d in $_HERE ~/bin /usr/local/bin /opt/homebrew/bin /usr/bin /bin; do
+    if [[ -x $d/$n ]]; then print -r -- $d/$n; return 0; fi
+  done
+  command -v $n 2>/dev/null || true
+}
+# Same reason the sub-processes below need it: `nohup "$0" _watch` and `say`
+# and `date` are all resolved against whatever PATH we were handed.
+export PATH=$_HERE:$HOME/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
+
+DDCCTL=${DDCCTL:-$(_find ddcctl)}
+DDCPROBE=${DDCPROBE:-$(_find ddcprobe)}
+DISP=${MONCTL_DISPLAY:-1}
+
+# --- bus liveness -----------------------------------------------------------
+#
+# The panel drops its DDC bus the moment the display sleeps. Reads then come
+# back as "current: 0, max: 0" behind "No data after 10 tries" (ddcctl) or
+# "no DDC-capable framebuffer/bus responded" (ddcprobe), and every write is
+# refused. Nothing is wrong with the cable, the binary or the monitor: the bus
+# is asleep with the panel, and the only cure is to wake the display.
+#
+# That failure used to reach the user as two unrelated-looking symptoms -- a
+# silent 0/0 status from the ddcctl side, a raw driver diagnostic from the
+# ddcprobe side -- with no hint that the fix was to wake the screen. Both paths
+# now go through _revive: wake once per run, retry once, and say so.
+#
+# MONCTL_NO_WAKE=1 opts out. Background pollers must set it: a status read that
+# lights up a dark screen is worse than a status read that fails.
+
+_revived=0
+
+_bus_dead() {   # does this ddcctl/ddcprobe output smell of a sleeping bus?
+  [[ $1 == *"No data after"* || $1 == *"DDC send command failed"* \
+     || $1 == *"no DDC-capable"* ]]
+}
+
+_display_state() {   # 4 = on, lower = progressively asleep; empty = unknown
+  ioreg -n IODisplayWrangler -r -d 1 2>/dev/null \
+    | sed -n 's/.*"CurrentPowerState"=\([0-9]*\).*/\1/p' | head -1
+}
+
+# Returns 0 only when it actually woke something, i.e. when a retry is worth it.
+_revive() {
+  (( _revived )) && return 1
+  _revived=1
+  [[ -n ${MONCTL_NO_WAKE-} ]] && return 1
+  local s; s=$(_display_state)
+  if [[ -n $s ]] && (( s < 4 )); then
+    print -u2 "monctl: display asleep -- waking it to reach the DDC bus"
+  else
+    # macOS thinks the display is on but the panel disagrees (its own DPMS off,
+    # or a link that dropped). Declaring user activity re-asserts the link.
+    print -u2 "monctl: DDC bus not answering -- nudging the display"
+  fi
+  caffeinate -u -t 2 2>/dev/null || return 1
+  sleep 2
+  return 0
+}
+
+# ddcprobe reaches arbitrary VCP codes; ddcctl only exposes 8 hardcoded ones.
+#
+# ddcprobe's stderr is the only place a dead bus or a refused write announces
+# itself ("no DDC-capable framebuffer/bus responded", "write failed"). It used
+# to be redirected to /dev/null here, and err_return then aborted the script
+# before any label printed -- so every ddcprobe-backed command failed as pure
+# silence and exit 1. Let the diagnostic through, and retry a sleeping bus once.
+_p() {
+  [[ -n $DDCPROBE ]] || { print -u2 "monctl: ddcprobe not installed"; return 1 }
+  local out err rc ef
+  ef=$(mktemp -t monctl) || return 1
+  out=$("$DDCPROBE" "$@" 2>"$ef") && rc=0 || rc=$?
+  err=$(<"$ef")
+  if (( rc != 0 )) || _bus_dead "$err"; then
+    if _revive; then
+      out=$("$DDCPROBE" "$@" 2>"$ef") && rc=0 || rc=$?
+      err=$(<"$ef")
+    fi
+  fi
+  rm -f "$ef"
+  [[ -n $out ]] && print -r -- "$out"
+  [[ -n $err ]] && print -ru2 -- "$err"
+  return $rc
+}
+_pget()   { _p get "$1" | sed -n 's/.*current=\([0-9]*\).*/\1/p' }
+_pset()   { _p set "$1" "$2" >/dev/null && print "$2" }
+
+# A write that reports what actually happened. The label used to be printed
+# unconditionally next to a discarded _pset status, so a refused write read as
+# success -- the same bug the source switch below already carries a fix for.
+_wrote() {
+  local code=$1 val=$2 label=$3
+  _p set "$code" "$val" >/dev/null || {
+    print -u2 "monctl: $label -- write refused by the display"; return 1 }
+  print -r -- "$label"
+}
+
+if [[ -z $DDCCTL || ! -x $DDCCTL ]]; then
+  print -u2 "monctl: ddcctl not found. Install it with:  brew install ddcctl"
+  return 1 2>/dev/null || exit 1
+fi
+
+# --- VCP plumbing -----------------------------------------------------------
+
+# _query <flag> -> prints "current max", or nothing if the control is unsupported
+#
+# A sleeping bus answers "current: 0, max: 0" rather than failing, which is why
+# `monctl` used to draw a status page of empty meters instead of saying the
+# screen was off. Retry through _revive before believing a zero.
+_query() {
+  local out
+  out=$("$DDCCTL" -d "$DISP" "$1" '?' 2>&1) || true
+  if _bus_dead "$out"; then
+    _revive && { out=$("$DDCCTL" -d "$DISP" "$1" '?' 2>&1) || true }
+  fi
+  # Still dead: report nothing. ddcctl's "current: 0, max: 0" on a sleeping bus
+  # is not a reading, and passing it on is how `monctl b` used to answer 0 for a
+  # monitor sitting at brightness 48.
+  _bus_dead "$out" && return 1
+  print -r -- "$out" | sed -n 's/.*current: \([0-9]*\), max: \([0-9]*\).*/\1 \2/p' | head -1
+}
+
+# _ddcw <flag> <value> — a ddcctl write that knows whether it landed. These used
+# to be fire-and-forget (output to /dev/null, status ignored, success printed
+# regardless), so on a sleeping bus "muted" was simply a lie.
+_ddcw() {
+  local flag=$1 val=$2 out
+  out=$("$DDCCTL" -d "$DISP" "$flag" "$val" 2>&1) || true
+  if _bus_dead "$out"; then
+    _revive && { out=$("$DDCCTL" -d "$DISP" "$flag" "$val" 2>&1) || true }
+  fi
+  _bus_dead "$out" && return 1
+  return 0
+}
+
+_get() {
+  local qr; qr=$(_query "$1") || true
+  [[ -n $qr ]] || { print -u2 "monctl: no answer from the display -- is it asleep?"; return 1 }
+  print -r -- "${qr%% *}"
+}
+_max() {
+  local qr; qr=$(_query "$1") || true
+  [[ -n $qr ]] || return 1
+  print -r -- "${qr##* }"
+}
+
+# _apply <flag> <value>  — value may be N, +N or -N; clamps to [0,max]
+_apply() {
+  local flag=$1 val=$2 cur max target
+  local qr; qr=$(_query "$flag")
+  if [[ -z $qr ]]; then
+    print -u2 "monctl: control $flag not supported by this display"
+    return 1
+  fi
+  cur=${qr%% *}; max=${qr##* }
+  case $val in
+    +*) target=$(( cur + ${val#+} )) ;;
+    -*) target=$(( cur - ${val#-} )) ;;
+    *)  target=$val ;;
+  esac
+  (( target < 0 ))    && target=0
+  (( target > max ))  && target=$max
+  _ddcw "$flag" "$target" || {
+    print -u2 "monctl: write to $flag refused by the display"; return 1 }
+  print -r -- "$target"
+}
+
+# _bar <value> <max> — a little ASCII meter
+_bar() {
+  local v=$1 m=$2 width=24 filled
+  (( m == 0 )) && m=100
+  filled=$(( v * width / m ))
+  local out=""
+  local i
+  for (( i = 0; i < width; i++ )); do
+    (( i < filled )) && out+="█" || out+="·"
+  done
+  print -rn -- "$out"
+}
+
+_show() {
+  local label=$1 flag=$2 qr v m
+  qr=$(_query "$flag")
+  if [[ -z $qr ]]; then
+    printf "  %-12s %s\n" "$label" "unsupported"
+    return
+  fi
+  v=${qr%% *}; m=${qr##* }
+  printf "  %-12s %s  %3d/%d\n" "$label" "$(_bar "$v" "$m")" "$v" "$m"
+}
+
+# --- commands ---------------------------------------------------------------
+
+_status() {
+  local name out
+  # ddcctl prints the EDID name while probing; ioreg has no top-level
+  # DisplayProductName key on this machine, so parse ddcctl's own output.
+  # This is the first DDC transaction of the run, so it is where a sleeping
+  # bus gets noticed and revived -- otherwise the header printed a name (EDID
+  # survives sleep) above a page of zeroed meters.
+  out=$("$DDCCTL" -d "$DISP" -b '?' 2>&1) || true
+  if _bus_dead "$out"; then
+    _revive && { out=$("$DDCCTL" -d "$DISP" -b '?' 2>&1) || true }
+  fi
+  name=$(print -r -- "$out" | sed -n 's/.*got edid\.name: *//p' | head -1)
+  print -r -- "${name:-external display}  (ddcctl display $DISP)"
+  if _bus_dead "$out"; then
+    print -u2 "monctl: display is asleep -- values below are not readable"
+  fi
+  _show Brightness -b
+  _show Contrast   -c
+  _show Volume     -v
+  local mq; mq=$(_query -m)
+  if [[ -n $mq ]]; then
+    printf "  %-12s %s\n" "Mute" "$( [[ ${mq%% *} == 1 ]] && print muted || print unmuted )"
+  fi
+  _show "Red gain"   -rg
+  _show "Green gain" -gg
+  _show "Blue gain"  -bg
+}
+
+# ---------------------------------------------------------------------------
+# Deferred power-off -- the substrate under "hey Siri, turn off the monitor in
+# 15 minutes".
+#
+# Siri cannot defer an arbitrary shortcut: it matches an utterance to a shortcut
+# NAME and runs it now. So the waiting has to happen down here, and the shortcut
+# becomes a one-line fire-and-return.
+#
+# The wait is deadline-based rather than `sleep $((n * 60))`. A plain sleep is
+# frozen while the Mac is asleep, so closing the lid halfway through a 15-minute
+# timer would fire it 15 minutes after the WAKE -- keeping the letter of the
+# countdown and breaking the promise. Comparing wall clock against a stored
+# deadline keeps the promise instead.
+#
+# State is a pid + a deadline in a tmp dir, so `cancel` and `status` are honest
+# and a second `in` replaces the first rather than racing it. Everything is
+# spoken aloud: this is voice-driven, on a Mac whose own panel is dead, and a
+# timer you cannot see is a timer you cannot trust.
+# ---------------------------------------------------------------------------
+# A FIXED path, not $TMPDIR. Shortcuts hands its Run Shell Script action a
+# different TMPDIR than a login shell gets, so a timer set by Siri and a
+# `monctl hardoff cancel` typed in a terminal would each see their own empty
+# state dir and swear nothing was scheduled. /tmp is the same for both, and
+# matches where airplay_watch.sh already keeps its flag.
+_HO_DIR=/tmp/monctl
+_HO_PID=$_HO_DIR/hardoff.pid
+_HO_WHEN=$_HO_DIR/hardoff.deadline
+
+_ho_say() { [[ -n ${MONCTL_QUIET-} ]] || /usr/bin/say -v Daniel "$1" 2>/dev/null & }
+
+_ho_pending() {   # echoes seconds remaining, or nothing
+  [[ -s $_HO_PID && -s $_HO_WHEN ]] || return 1
+  kill -0 "$(<$_HO_PID)" 2>/dev/null || { rm -f $_HO_PID $_HO_WHEN; return 1 }
+  local left=$(( $(<$_HO_WHEN) - $(date +%s) ))
+  if (( left < 0 )); then left=0; fi
+  print $left
+}
+
+_ho_cancel() {
+  local left; left=$(_ho_pending) || return 1
+  kill "$(<$_HO_PID)" 2>/dev/null
+  rm -f $_HO_PID $_HO_WHEN
+  print $left
+}
+
+# The watcher, re-entering this same script detached. Not a function running in
+# the background: a background function dies with the shell that spawned it, and
+# the spawning shell here is a Shortcut that exits the moment Siri is done.
+_ho_watch() {
+  local deadline=$1 warned=0
+  while :; do
+    local left=$(( deadline - $(date +%s) ))
+    if (( left <= 0 )); then break; fi
+    if (( ! warned && left <= 30 )); then
+      warned=1
+      _ho_say "Monitor switching off in thirty seconds. Say, hey Siri, cancel the monitor, to stop it."
+    fi
+    sleep $(( left > 30 ? 5 : 1 ))
+  done
+  rm -f $_HO_PID $_HO_WHEN
+  _p set D6 5 >/dev/null
+}
+
+cmd=${1:-status}
+
+case $cmd in
+  status|"")            _status ;;
+
+  b|bright|brightness)  [[ -n ${2-} ]] && _apply -b "$2" || _get -b ;;
+  c|contrast)           [[ -n ${2-} ]] && _apply -c "$2" || _get -c ;;
+  v|vol|volume)         [[ -n ${2-} ]] && _apply -v "$2" || _get -v ;;
+
+  mute)                 _ddcw -m 1 && print muted   || { print -u2 "monctl: mute refused by the display"; exit 1 } ;;
+  unmute)               _ddcw -m 2 && print unmuted || { print -u2 "monctl: unmute refused by the display"; exit 1 } ;;
+  toggle)
+      if [[ $(_get -m) == 1 ]]; then
+        _ddcw -m 2 && print unmuted || { print -u2 "monctl: unmute refused by the display"; exit 1 }
+      else
+        _ddcw -m 1 && print muted   || { print -u2 "monctl: mute refused by the display"; exit 1 }
+      fi ;;
+
+  rgb)
+      [[ -n ${2-} ]] && _apply -rg "$2" >/dev/null
+      [[ -n ${3-} ]] && _apply -gg "$3" >/dev/null
+      [[ -n ${4-} ]] && _apply -bg "$4" >/dev/null
+      _show "Red gain" -rg; _show "Green gain" -gg; _show "Blue gain" -bg ;;
+
+  input)                _get -i ;;
+
+  # ---- extended controls, via ddcprobe (raw VCP) --------------------------
+
+  web)                  # zsh doesn't word-split unquoted expansions, so build argv explicitly
+      # Everything after "web" belongs to server.py (--lan, --token, --host,
+      # --no-browser, --help). Only $2 used to be forwarded, and always as the
+      # value of --port, so "monctl web --lan" became "--port --lan".
+      shift
+      local -a wargs; wargs=(python3 ~/monctl/webui/server.py)
+      if [[ ${1-} == <-> ]]; then wargs+=(--port "$1"); shift; fi
+      wargs+=("$@")
+      exec "${wargs[@]}" ;;
+  watch)                # detect changes made from the monitor's own OSD buttons
+      shift
+      exec python3 ~/monctl/watch.py "$@" ;;
+  lid)                  # clamshell state — what auto-brightness gates on
+      if ioreg -r -k AppleClamshellState -d 4 2>/dev/null | grep -q 'AppleClamshellState" = Yes'; then
+        print closed
+      else
+        print open
+      fi ;;
+  autostart)            # start the web panel at login
+      case ${2-status} in
+        on)     curl -sf -X POST http://127.0.0.1:8765/api/autostart \
+                  -H 'Content-Type: application/json' -d '{"enabled":true}' >/dev/null \
+                  && print "start at login: enabled" \
+                  || print -u2 "monctl: start 'monctl web' first" ;;
+        off)    curl -sf -X POST http://127.0.0.1:8765/api/autostart \
+                  -H 'Content-Type: application/json' -d '{"enabled":false}' >/dev/null \
+                  && print "start at login: disabled" \
+                  || print -u2 "monctl: start 'monctl web' first" ;;
+        status) launchctl print-disabled gui/$(id -u) 2>/dev/null \
+                  | grep -q '"com.dell.monctl.web" => disabled' \
+                  && print disabled || {
+                    [[ -f ~/Library/LaunchAgents/com.dell.monctl.web.plist ]] \
+                      && print enabled || print "not installed"; } ;;
+        *)      print -u2 "usage: monctl autostart [on|off|status]"; exit 1 ;;
+      esac ;;
+  als)                  # current ambient light in lux
+      "${ALSREAD:-$HOME/bin/alsread}" ;;
+  auto)                 # drive backlight from the ambient light sensor
+      shift
+      exec python3 ~/monctl/autobright.py "$@" ;;
+  all)                  _p scan ;;
+  caps)                 _p caps ;;
+  hours)                local h; h=$(_pget C0) || exit 1
+                        [[ -n $h ]] || { print -u2 "monctl: no answer from the display"; exit 1 }
+                        print "$h hours powered on" ;;
+
+  vcp)                  # raw escape hatch: monctl vcp 6C [value]
+      [[ -z ${2-} ]] && { print -u2 "usage: monctl vcp <hex> [value]"; exit 1 }
+      if [[ -n ${3-} ]]; then _pset "$2" "$3"; else _p get "$2"; fi ;;
+
+  source)               # 0x60 — 0x0F DisplayPort, 0x11 HDMI1, 0x12 HDMI2
+      # _pset's output used to be discarded and the label printed regardless, so
+      # a failed write ("no DDC-capable bus responded") still reported success.
+      # _switch reports what actually happened instead.
+      #
+      # Note the monitor will not sit on an input with no signal: it blanks,
+      # looks, finds nothing, and returns to the live source. So "sent" is the
+      # honest word -- whether it sticks depends on something being plugged in.
+      _switch() {
+        local code=$1 label=$2 out
+        # || true: err_return would abort the function at a failing capture,
+        # which is what made the error branch below dead code.
+        out=$(_p set 60 "$code" 2>&1) || true
+        if [[ $out == *"<- $code"* ]]; then
+          print "$label: switch sent"
+        else
+          print -u2 "monctl: switch to $label failed — ${out:-no reply from the DDC bus}"
+          return 1
+        fi
+      }
+      case ${2-} in
+        dp|displayport) _switch 15 "DisplayPort" ;;
+        hdmi1)          _switch 17 "HDMI 1" ;;
+        hdmi2)          _switch 18 "HDMI 2" ;;
+        "")             local s; s=$(_pget 60)
+                        case $s in 15) print DisplayPort ;; 17) print "HDMI 1" ;;
+                                   18) print "HDMI 2" ;; *) print "unknown ($s)" ;; esac ;;
+        *)              print -u2 "usage: monctl source [dp|hdmi1|hdmi2]"; exit 1 ;;
+      esac ;;
+
+  temp)                 # 0x14 — colour preset
+      case ${2-} in
+        6500|warm)   _wrote 14 5  "6500K" ;;
+        7500|normal) _wrote 14 6  "7500K" ;;
+        9300|cool)   _wrote 14 8  "9300K" ;;
+        user)        _wrote 14 11 "User" ;;
+        "")          local t; t=$(_pget 14)
+                     case $t in 5) print 6500K ;; 6) print 7500K ;; 8) print 9300K ;;
+                                11) print User ;; *) print "preset $t" ;; esac ;;
+        *)           print -u2 "usage: monctl temp [6500|7500|9300|user]"; exit 1 ;;
+      esac ;;
+
+  sat|hue)              # six-axis colour: R Y G C B M
+      local -A SAT=(red 59 yellow 5A green 5B cyan 5C blue 5D magenta 5E)
+      local -A HUE=(red 9B yellow 9C green 9D cyan 9E blue 9F magenta A0)
+      local -A MAP; [[ $cmd == sat ]] && MAP=(${(kv)SAT}) || MAP=(${(kv)HUE})
+      if [[ -z ${2-} ]]; then
+        local k v
+        for k in red yellow green cyan blue magenta; do
+          # capture first: a failed read used to print a half-drawn row before
+          # err_return killed the loop
+          v=$(_pget ${MAP[$k]}) || exit 1
+          printf "  %-8s %s\n" "$k" "$v"
+        done
+      elif [[ -z ${MAP[${2}]-} ]]; then
+        print -u2 "monctl $cmd: colour must be red|yellow|green|cyan|blue|magenta"; exit 1
+      elif [[ -n ${3-} ]]; then _pset "${MAP[$2]}" "$3"
+      else _pget "${MAP[$2]}"
+      fi ;;
+
+  black)                # 0x6C/6E/70 — per-channel black level ("black boost")
+      [[ -n ${2-} ]] && _pset 6C "$2" >/dev/null
+      [[ -n ${3-} ]] && _pset 6E "$3" >/dev/null
+      [[ -n ${4-} ]] && _pset 70 "$4" >/dev/null
+      local br bg bb
+      br=$(_pget 6C); bg=$(_pget 6E); bb=$(_pget 70)
+      [[ -n $br$bg$bb ]] || { print -u2 "monctl: no answer from the display"; exit 1 }
+      printf "  black level  R=%s G=%s B=%s\n" "$br" "$bg" "$bb" ;;
+
+  # DPMS power state, VCP D6. The MCCS values are 1 on, 2 standby, 3 suspend,
+  # 4 off, 5 hard off. `standby` sent 4 -- which is Off, not standby -- so the
+  # one command whose name mattered was the one that lied. The values keep their
+  # behaviour (4 is the right thing for "turn the screen off"); the names now
+  # match the spec, and `standby` stays as an alias so nothing that calls it
+  # breaks.
+  #
+  # 5 is deliberately not exposed: it powers the panel down like its own button,
+  # takes the DDC bus with it, and on most monitors only the physical button
+  # brings it back. `monctl vcp D6 5` is there for anyone who means it.
+  on|wake)              _wrote D6 1 "monitor -> on" ;;
+  off|standby)          _wrote D6 4 "monitor -> off" ;;
+  suspend)              _wrote D6 3 "monitor -> suspend" ;;
+
+  # VCP D6 = 5: MCCS 2.1's "turn off power, as if the user pressed the power
+  # button". Distinct from `off` (D6 = 4, DPMS off, LED stays lit) -- this kills
+  # the LED and takes the DDC bus down with it. ONE WAY: nothing on this Mac can
+  # undo it, `monctl on` reports success and does nothing. The monitor's own
+  # button is the way back. Verified on this KG281K 2026-09-11.
+  hardoff)
+      case ${2-now} in
+        now)
+            _ho_cancel >/dev/null || true
+            _wrote D6 5 "monitor -> off (power button)" ;;
+
+        in) # monctl hardoff in <minutes>
+            [[ ${3-} == <-> ]] || {
+              print -u2 "usage: monctl hardoff in <minutes>"; exit 1 }
+            (( $3 > 0 )) || { print -u2 "monctl: minutes must be > 0"; exit 1 }
+            _ho_cancel >/dev/null || true
+            mkdir -p $_HO_DIR
+            _ho_deadline=$(( $(date +%s) + $3 * 60 ))
+            print $_ho_deadline > $_HO_WHEN
+            # &! detaches AND disowns: the Shortcut that started us is gone a
+            # second later, and a merely backgrounded job would go with it.
+            nohup "$0" _watch $_ho_deadline >/dev/null 2>&1 &!
+            print $! > $_HO_PID
+            print "monitor off at $(date -r $_ho_deadline '+%H:%M') (in $3 min)"
+            _ho_say "Monitor will switch off in $3 $( (( $3 == 1 )) && print minute || print minutes )." ;;
+
+        cancel)
+            if _ho_left=$(_ho_cancel); then
+              print "cancelled (was $(( (_ho_left + 59) / 60 )) min away)"
+              _ho_say "Monitor timer cancelled."
+            else
+              print "nothing scheduled"
+              _ho_say "No monitor timer was set."
+            fi ;;
+
+        status)
+            if _ho_left=$(_ho_pending); then
+              print "monitor off in $(( (_ho_left + 59) / 60 )) min ($(date -r $(<$_HO_WHEN) '+%H:%M'))"
+            else
+              print "nothing scheduled"
+            fi ;;
+
+        *)  print -u2 "usage: monctl hardoff [now|in <minutes>|cancel|status]"; exit 1 ;;
+      esac ;;
+
+  _watch)               # internal: the detached countdown, not for humans
+      _ho_watch "$2" ;;
+
+  reset)                # factory restores
+      case ${2-color} in
+        color)      _wrote 08 1 "colour reset" ;;
+        brightness) _wrote 05 1 "brightness/contrast reset" ;;
+        all)        _wrote 04 1 "factory defaults restored" ;;
+        *)          print -u2 "usage: monctl reset [color|brightness|all]"; exit 1 ;;
+      esac ;;
+
+  -h|--help|help)
+      sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//' ;;
+
+  *)
+      print -u2 "monctl: unknown command '$cmd'  (try: monctl help)"
+      exit 1 ;;
+esac

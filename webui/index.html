@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>MonCtl</title>
+<style>
+:root {
+  --bg: #0e0f11; --card: #17191c; --line: #2a2d32; --fg: #f2f3f4; --dim: #8b9097;
+  --accent: #0a84ff; --danger: #ff453a; --ok: #30d158;
+}
+@media (prefers-color-scheme: light) {
+  :root { --bg: #f2f2f4; --card: #fff; --line: #d9dbe0; --fg: #111; --dim: #6b7078; }
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+body { margin: 0; background: var(--bg); color: var(--fg);
+  font: 16px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
+main { max-width: 640px; margin: 0 auto; padding: 20px 16px 48px; }
+header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 18px; }
+h1 { font-size: 20px; margin: 0; font-weight: 650; }
+.hours { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 15px; }
+.hours b { color: var(--fg); font-weight: 600; }
+section { background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+  padding: 16px; margin-bottom: 14px; }
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim);
+  margin: 0 0 12px; font-weight: 600; }
+button { font: inherit; color: var(--fg); background: transparent; border: 1px solid var(--line);
+  border-radius: 12px; padding: 12px 16px; cursor: pointer; min-height: 48px; }
+button:active { transform: scale(.98); }
+button.big { width: 100%; min-height: 96px; font-size: 30px; font-weight: 700; letter-spacing: .02em;
+  border-radius: 16px; }
+button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.danger { color: var(--danger); border-color: var(--danger); }
+button.danger.armed { background: var(--danger); color: #fff; }
+.row { display: flex; gap: 10px; flex-wrap: wrap; }
+.row > button { flex: 1; }
+.ctl { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 12px; margin: 14px 0; }
+.ctl:first-of-type { margin-top: 0; }
+.ctl label { font-size: 16px; }
+.ctl output { font-variant-numeric: tabular-nums; color: var(--dim); min-width: 3ch; text-align: right; }
+.ctl input[type=range] { grid-column: 1 / -1; width: 100%; height: 44px; accent-color: var(--accent); }
+.ctl.small { margin: 8px 0; }
+.ctl.small label { font-size: 14px; }
+.ctl.small input[type=range] { height: 28px; }
+select { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line);
+  border-radius: 10px; padding: 10px; min-height: 44px; }
+details > summary { cursor: pointer; color: var(--dim); padding: 6px 0; list-style: none; }
+details > summary::before { content: "▸ "; }
+details[open] > summary::before { content: "▾ "; }
+details.group { margin: 10px 0 0; }
+details.group > summary { font-weight: 600; color: var(--fg); }
+.info { display: flex; justify-content: space-between; padding: 6px 0; color: var(--dim);
+  font-variant-numeric: tabular-nums; }
+.status { color: var(--dim); font-size: 13px; margin-top: 8px; min-height: 1.4em; }
+.status.err { color: var(--danger); }
+.switch { display: flex; justify-content: space-between; align-items: center; }
+.muted { color: var(--dim); font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="name">Acer KG281K</h1>
+    <div class="hours">Powered on <b id="hours">—</b></div>
+  </header>
+
+  <section>
+    <h2>Input</h2>
+    <button class="big" id="hdmi1">HDMI 1</button>
+    <details style="margin-top:10px">
+      <summary>More inputs</summary>
+      <button id="hdmi2" style="width:100%">HDMI 2</button>
+    </details>
+    <div class="status" id="inputStatus"></div>
+  </section>
+
+  <section>
+    <h2>Picture &amp; sound</h2>
+    <div class="ctl"><label for="c10">Brightness</label><output id="o10">—</output>
+      <input type="range" id="c10" min="0" max="100" disabled></div>
+    <div class="ctl"><label for="c62">Volume</label><output id="o62">—</output>
+      <input type="range" id="c62" min="0" max="100" disabled></div>
+    <button id="mute" style="width:100%">Mute</button>
+  </section>
+
+  <section>
+    <h2>Display</h2>
+    <div class="row">
+      <button id="sleep">Sleep</button>
+      <button id="wake">Wake</button>
+      <button id="off" class="danger">Power off</button>
+    </div>
+    <div class="status" id="dispStatus"></div>
+    <div class="switch" style="margin-top:12px">
+      <span>Auto brightness <span class="muted" id="lux"></span></span>
+      <button id="auto">Off</button>
+    </div>
+  </section>
+
+  <section>
+    <details id="adv">
+      <summary>Advanced</summary>
+      <div id="advBody" class="muted">Loading…</div>
+    </details>
+  </section>
+  <div class="status" id="err"></div>
+</main>
+
+<script>
+"use strict";
+const TOKEN = new URLSearchParams(location.search).get("k") || "";
+const api = p => TOKEN ? p + (p.includes("?") ? "&" : "?") + "k=" + encodeURIComponent(TOKEN) : p;
+const $ = id => document.getElementById(id);
+const HDMI1 = 17, HDMI2 = 18;
+
+function fail(e) { const el = $("err"); el.className = "status err"; el.textContent = String(e.message || e); }
+async function jget(p) { const r = await fetch(api(p)); if (!r.ok) throw new Error(p + " HTTP " + r.status); return r.json(); }
+async function jpost(p, body) {
+  const r = await fetch(api(p), { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}) });
+  if (!r.ok) throw new Error(p + " HTTP " + r.status);
+  return r.json();
+}
+const setVcp = (code, value) => jpost("/api/set", { code, value: Math.round(value) });
+const state = async codes => (await jget("/api/state?codes=" + codes.join(","))).values;
+
+/* One write per 130 ms per code; DDC is serial and ~150 ms per round trip. */
+const timers = {};
+function writeSoon(code, value) {
+  clearTimeout(timers[code]);
+  timers[code] = setTimeout(() => setVcp(code, value).catch(fail), 130);
+}
+const dragging = new Set();
+
+/* ---- basics ---------------------------------------------------------- */
+let muted = false;
+function paintInput(src) {
+  $("hdmi1").classList.toggle("on", src === HDMI1);
+  $("hdmi1").textContent = src === HDMI1 ? "HDMI 1  ✓" : "HDMI 1";
+  $("hdmi2").classList.toggle("on", src === HDMI2);
+  $("hdmi2").textContent = src === HDMI2 ? "HDMI 2  ✓" : "HDMI 2";
+}
+async function refresh() {
+  if (document.hidden) return;
+  try {
+    const v = await state(["10", "62", "8D", "60", "C0"]);
+    $("err").textContent = "";
+    for (const c of ["10", "62"]) {
+      const el = $("c" + c);
+      if (v[c]) {
+        el.max = v[c].max;
+        if (!dragging.has(c)) { el.value = v[c].cur; $("o" + c).textContent = v[c].cur; }
+        el.disabled = false;
+      } else { el.disabled = true; $("o" + c).textContent = "—"; }
+    }
+    if (v["8D"]) { muted = v["8D"].cur === 1; $("mute").textContent = muted ? "Unmute" : "Mute";
+      $("mute").classList.toggle("on", muted); }
+    if (v["60"]) paintInput(v["60"].cur);
+    if (v["C0"]) $("hours").textContent = v["C0"].cur.toLocaleString() + " h";
+  } catch (e) { fail(e); }
+}
+for (const c of ["10", "62"]) {
+  const el = $("c" + c);
+  el.addEventListener("input", () => { dragging.add(c); $("o" + c).textContent = el.value; writeSoon(c, +el.value); });
+  el.addEventListener("change", () => setTimeout(() => dragging.delete(c), 600));
+}
+$("mute").onclick = () => { muted = !muted; $("mute").textContent = muted ? "Unmute" : "Mute";
+  $("mute").classList.toggle("on", muted); setVcp("8D", muted ? 1 : 2).catch(fail); };
+
+async function pickInput(code) {
+  paintInput(code);
+  $("inputStatus").textContent = "Switching… the screen may go blank for up to a minute.";
+  try { await setVcp("60", code); } catch (e) { fail(e); }
+  setTimeout(() => { $("inputStatus").textContent = ""; refresh(); }, 8000);
+}
+$("hdmi1").onclick = () => pickInput(HDMI1);
+$("hdmi2").onclick = () => pickInput(HDMI2);
+
+/* ---- display power --------------------------------------------------- */
+async function disp(action) {
+  try {
+    const r = await jpost("/api/display", { action });
+    $("dispStatus").textContent = r.asleep ? "Display asleep" : "Display on";
+  } catch (e) { fail(e); }
+}
+$("sleep").onclick = () => disp("sleep");
+$("wake").onclick = () => disp("wake");
+let offArmed = null;
+$("off").onclick = () => {
+  const b = $("off");
+  if (!offArmed) {
+    b.textContent = "Tap again to confirm"; b.classList.add("armed");
+    $("dispStatus").textContent = "Power off cannot be undone from here — only the monitor's own button turns it back on.";
+    offArmed = setTimeout(disarm, 4000);
+  } else { disarm(); disp("off"); }
+};
+function disarm() { clearTimeout(offArmed); offArmed = null; $("off").textContent = "Power off";
+  $("off").classList.remove("armed"); }
+jget("/api/display").then(r => $("dispStatus").textContent = r.asleep ? "Display asleep" : "Display on").catch(() => {});
+
+/* ---- auto brightness ------------------------------------------------- */
+async function refreshAuto() {
+  if (document.hidden) return;
+  try {
+    const a = await jget("/api/auto");
+    $("auto").textContent = a.running ? "On" : "Off";
+    $("auto").classList.toggle("on", a.running);
+    $("lux").textContent = a.lux != null ? "· " + Math.round(a.lux) + " lux" : "";
+  } catch (e) {}
+}
+$("auto").onclick = async () => {
+  const on = $("auto").classList.contains("on");
+  try { await jpost("/api/auto", on ? { action: "stop" } : {}); } catch (e) { fail(e); }
+  setTimeout(refreshAuto, 500);
+};
+
+/* ---- advanced (rendered from /api/catalog, loaded when opened) -------- */
+const SKIP = new Set(["10", "62", "60", "8D"]);
+let advLoaded = false;
+$("adv").addEventListener("toggle", async () => {
+  if (!$("adv").open || advLoaded) return;
+  advLoaded = true;
+  try {
+    const groups = (await jget("/api/catalog")).groups.filter(g => g.id !== "input");
+    const body = $("advBody"); body.textContent = ""; body.className = "";
+    const codes = [...new Set(groups.flatMap(g => g.controls).filter(c => c.type !== "action" && !SKIP.has(c.code)).map(c => c.code))];
+    const vals = await state(codes);
+    for (const g of groups) {
+      const ctls = g.controls.filter(c => !SKIP.has(c.code));
+      if (!ctls.length) continue;
+      const d = document.createElement("details"); d.className = "group";
+      const s = document.createElement("summary"); s.textContent = g.name; d.append(s);
+      for (const c of ctls) d.append(renderCtl(c, vals[c.code]));
+      body.append(d);
+    }
+  } catch (e) { fail(e); advLoaded = false; }
+});
+function renderCtl(c, v) {
+  const wrap = document.createElement("div");
+  if (c.type === "info") {
+    wrap.className = "info";
+    let t = "—";
+    if (v) { const n = c.scale ? (v.cur * c.scale).toFixed(2) : c.hex ? "0x" + v.cur.toString(16).toUpperCase() : v.cur.toLocaleString();
+      t = n + (c.unit ? " " + c.unit : ""); }
+    wrap.innerHTML = "<span></span><span></span>"; wrap.children[0].textContent = c.name; wrap.children[1].textContent = t;
+  } else if (c.type === "action") {
+    const b = document.createElement("button"); b.textContent = c.name; b.style.cssText = "width:100%;margin:6px 0";
+    if (c.danger) b.classList.add("danger");
+    b.onclick = () => { if (confirm(c.confirm || c.name + "?")) setVcp(c.code, 1).catch(fail); };
+    wrap.append(b);
+  } else if (c.type === "select") {
+    wrap.className = "info";
+    const l = document.createElement("span"); l.textContent = c.name;
+    const sel = document.createElement("select");
+    for (const [val, name] of c.options || []) { const o = new Option(name, val); sel.append(o); }
+    if (v) sel.value = v.cur;
+    sel.onchange = () => { if (c.confirm && !confirm(c.confirm)) { if (v) sel.value = v.cur; return; }
+      setVcp(c.code, +sel.value).then(() => { if (v) v.cur = +sel.value; }).catch(fail); };
+    wrap.append(l, sel);
+  } else {
+    wrap.className = "ctl small";
+    const id = "a" + c.code;
+    const l = document.createElement("label"); l.htmlFor = id; l.textContent = c.name;
+    const o = document.createElement("output"); o.textContent = v ? v.cur : "—";
+    const r = document.createElement("input"); r.type = "range"; r.id = id; r.min = 0; r.max = v ? v.max : 100;
+    r.value = v ? v.cur : 0; r.disabled = !v;
+    if (c.tint) r.style.accentColor = c.tint;
+    r.oninput = () => { o.textContent = r.value; writeSoon(c.code, +r.value); };
+    wrap.append(l, o, r);
+  }
+  return wrap;
+}
+
+/* ---- boot ------------------------------------------------------------ */
+refresh(); refreshAuto();
+setInterval(refresh, 20000); setInterval(refreshAuto, 15000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { refresh(); refreshAuto(); } });
+</script>
+</body>
+</html>
