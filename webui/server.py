@@ -276,7 +276,9 @@ def display_action(action):
         elif action == "off":
             write_one("D6", 4)
         elif action == "on":
-            write_one("D6", 1)
+            # Unlike off/hardoff, an unacknowledged "on" means it did nothing:
+            # the panel is either already on or has no bus to hear it.
+            return write_one("D6", 1)
         elif action == "hardoff":
             # Return value deliberately ignored. The panel can drop the bus
             # before ddcctl gets its acknowledgement back, so a False here means
