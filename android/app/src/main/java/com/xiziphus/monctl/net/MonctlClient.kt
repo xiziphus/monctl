@@ -1,5 +1,6 @@
 package com.xiziphus.monctl.net
 
+import android.content.Context
 import com.xiziphus.monctl.data.Config
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -12,18 +13,23 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okio.Buffer
 import java.io.File
 import java.io.IOException
+import java.net.ConnectException
+import java.net.NoRouteToHostException
+import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
 
-enum class Route(val label: String) { LAN("LAN"), TUNNEL("Tunnel") }
+enum class Route(val label: String) { LAN("LAN"), TUNNEL("Tunnel"), BLE("Bluetooth") }
 
 sealed interface Reply<out T> {
     data class Ok<T>(val value: T, val route: Route) : Reply<T>
     data object NotConfigured : Reply<Nothing>
     data object Unauthorized : Reply<Nothing>
     data object LockedOut : Reply<Nothing>
-    data class Unreachable(val detail: String) : Reply<Nothing>
+    /** unsent = certainly never reached the Mac (refused, no DNS, tunnel down), so safe to resend elsewhere. */
+    data class Unreachable(val detail: String, val unsent: Boolean = false) : Reply<Nothing>
     data class Failed(val detail: String) : Reply<Nothing>
 }
 
@@ -54,7 +60,10 @@ fun Reply<*>.shortMessage(): String = when (this) {
  * LAN address with a 700 ms budget -- and cached for a minute (cleared on any
  * network change by MonctlApp). Requests are then sent on that route only.
  * Retrying a failed POST on the other route could apply it twice: a LAN
- * timeout does not mean the Mac didn't act on it. Only GETs fall back.
+ * timeout does not mean the Mac didn't act on it. Only GETs fall back --
+ * except to Bluetooth when the failure proves the request never left (the
+ * tunnel's "origin not connected", a refused connection, no DNS): that is
+ * the Mac-off-Wi-Fi case the Bluetooth route exists for.
  */
 object MonctlClient {
     val json = Json {
@@ -88,6 +97,9 @@ object MonctlClient {
     @Volatile
     private var cached: Pair<Route, Long>? = null
 
+    /** Set by MonctlApp; the Bluetooth route needs a Context. */
+    lateinit var appContext: Context
+
     fun forgetRoute() {
         cached = null
     }
@@ -120,7 +132,8 @@ object MonctlClient {
     /** Stream the published APK to [dest], reporting whole-percent progress. */
     suspend fun downloadApk(cfg: Config, dest: File, onProgress: (Int) -> Unit): Reply<Unit> = withContext(Dispatchers.IO) {
         if (!cfg.isConfigured) return@withContext Reply.NotConfigured
-        val route = resolve(cfg) ?: return@withContext Reply.Unreachable("not on the LAN and no tunnel set")
+        val route = resolve(cfg)?.takeIf { it != Route.BLE }
+            ?: return@withContext Reply.Failed("Updates need the LAN or the tunnel, not Bluetooth.")
         val http = (if (route == Route.LAN) lanHttp else tunnelHttp).newBuilder()
             .readTimeout(60, TimeUnit.SECONDS)
             .build()
@@ -223,6 +236,16 @@ object MonctlClient {
             if (cfg.tunnelUrl.isNotBlank()) {
                 add(Route.TUNNEL to once(Route.TUNNEL, cfg, get("/api/display")) { json.decodeFromString<DisplayReply>(it) })
             }
+            if (cfg.ble) {
+                add(
+                    Route.BLE to when {
+                        !::appContext.isInitialized || !BleTransport.permitted(appContext) ->
+                            Reply.Failed("Bluetooth permission not granted")
+                        !BleTransport.adapterOn(appContext) -> Reply.Failed("Bluetooth is off on this phone")
+                        else -> bleExchange(cfg, get("/api/display")) { json.decodeFromString<DisplayReply>(it.decodeToString()) }
+                    }
+                )
+            }
         }
     }
 
@@ -239,7 +262,10 @@ object MonctlClient {
     private fun baseFor(cfg: Config, route: Route) = when (route) {
         Route.LAN -> cfg.lanUrl
         Route.TUNNEL -> cfg.tunnelUrl
+        Route.BLE -> BLE_BASE
     }.trim().trimEnd('/')
+
+    private const val BLE_BASE = "http://ble.invalid"
 
     private suspend fun <T> call(
         cfg: Config,
@@ -257,21 +283,67 @@ object MonctlClient {
         parse: (ByteArray) -> T,
     ): Reply<T> = withContext(Dispatchers.IO) {
         if (!cfg.isConfigured) return@withContext Reply.NotConfigured
-        val route = resolve(cfg) ?: return@withContext Reply.Unreachable("not on the LAN and no tunnel set")
-        val r = exchange(route, cfg, build, slow, parse)
+        val route = resolve(cfg)
+            ?: return@withContext viaBle(cfg, build, parse, Reply.Unreachable("not on the LAN and no tunnel set", unsent = true))
+        if (route == Route.BLE) {
+            val r = bleExchange(cfg, build, parse)
+            if (r is Reply.Unreachable) forgetRoute()
+            return@withContext r
+        }
+        var r = exchange(route, cfg, build, slow, parse)
         if (r is Reply.Unreachable) {
             forgetRoute()
             if (retryable) {
                 val other = resolve(cfg)
-                if (other != null && other != route) return@withContext exchange(other, cfg, build, slow, parse)
+                if (other != null && other != route && other != Route.BLE) r = exchange(other, cfg, build, slow, parse)
             }
         }
+        if (r is Reply.Unreachable && (retryable || r.unsent)) return@withContext viaBle(cfg, build, parse, r)
         r
+    }
+
+    /** Last resort: Bluetooth, if it's switched on and allowed. Otherwise the original failure. */
+    private suspend fun <T> viaBle(cfg: Config, build: (String) -> Request, parse: (ByteArray) -> T, failure: Reply<T>): Reply<T> {
+        if (!bleUsable(cfg)) return failure
+        val r = bleExchange(cfg, build, parse)
+        if (r is Reply.Ok) cached = Route.BLE to System.currentTimeMillis()
+        return if (r is Reply.Unreachable) failure.withBle(r.detail) else r
+    }
+
+    private fun bleUsable(cfg: Config) =
+        cfg.ble && ::appContext.isInitialized && BleTransport.permitted(appContext) && BleTransport.adapterOn(appContext)
+
+    private fun <T> Reply<T>.withBle(detail: String): Reply<T> =
+        if (this is Reply.Unreachable) Reply.Unreachable("${this.detail}; Bluetooth: $detail", unsent) else this
+
+    private suspend fun <T> bleExchange(cfg: Config, build: (String) -> Request, parse: (ByteArray) -> T): Reply<T> {
+        val req = build(BLE_BASE)
+        val path = req.url.encodedPath + (req.url.encodedQuery?.let { "?$it" } ?: "")
+        val body = req.body?.let { b -> Buffer().also { b.writeTo(it) }.readUtf8() }
+        return try {
+            val resp = BleTransport.request(appContext, cfg.token, req.method, path, body)
+            val err = if (resp.status == 200) null
+            else runCatching { json.decodeFromString<ErrorReply>(resp.body.decodeToString()).error }.getOrNull()
+            when {
+                resp.status == 200 -> Reply.Ok(parse(resp.body), Route.BLE)
+                resp.status == 401 -> Reply.Unauthorized
+                err != null -> Reply.Failed(err)
+                else -> Reply.Failed("HTTP ${resp.status} (over Bluetooth)")
+            }
+        } catch (e: BleAuthException) {
+            Reply.Unauthorized
+        } catch (e: IOException) {
+            Reply.Unreachable(e.message ?: "Bluetooth failed")
+        } catch (e: SerializationException) {
+            Reply.Failed("Unexpected reply from the server")
+        }
     }
 
     private fun resolve(cfg: Config): Route? {
         cached?.let { (route, at) ->
-            if (System.currentTimeMillis() - at < ROUTE_TTL_MS && baseFor(cfg, route).isNotEmpty()) return route
+            val fresh = System.currentTimeMillis() - at < ROUTE_TTL_MS
+            if (fresh && route == Route.BLE && bleUsable(cfg)) return route
+            if (fresh && route != Route.BLE && baseFor(cfg, route).isNotEmpty()) return route
         }
         val route = when {
             cfg.lanUrl.isNotBlank() && isMonctl(cfg.lanUrl) -> Route.LAN
@@ -321,12 +393,16 @@ object MonctlClient {
                     err != null -> Reply.Failed(err)
                     // Cloudflare's own error page: the tunnel is up but the Mac
                     // (or server.py on it) is not answering.
-                    route == Route.TUNNEL && resp.code in 502..530 -> Reply.Unreachable("Mac offline or asleep")
+                    // 530 is cloudflared not connected at all: nothing reached the Mac.
+                    route == Route.TUNNEL && resp.code in 502..530 ->
+                        Reply.Unreachable("Mac offline or asleep", unsent = resp.code == 530)
                     else -> Reply.Failed("HTTP ${resp.code}")
                 }
             }
         } catch (e: IOException) {
-            Reply.Unreachable(e.message ?: e.javaClass.simpleName)
+            val unsent = e is ConnectException || e is UnknownHostException || e is NoRouteToHostException ||
+                e.message?.contains("connect timed out") == true
+            Reply.Unreachable(e.message ?: e.javaClass.simpleName, unsent)
         } catch (e: SerializationException) {
             Reply.Failed("Unexpected reply from the server")
         } catch (e: IllegalArgumentException) {

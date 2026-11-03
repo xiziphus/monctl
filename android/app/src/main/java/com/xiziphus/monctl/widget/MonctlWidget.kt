@@ -158,7 +158,11 @@ private fun Content(context: Context, st: WidgetStore.State) {
 private fun summary(st: WidgetStore.State): String {
     st.status?.let { return it }
     val s: Snapshot = st.snapshot ?: return "Tap ⟳ to load"
-    val where = if (st.route == Route.TUNNEL) " ☁" else ""
+    val where = when (st.route) {
+        Route.TUNNEL -> " ☁"
+        Route.BLE -> " BT"
+        else -> ""
+    }
     return when {
         s.asleep -> "Monitor off$where"
         !s.reachable -> "Monitor not answering$where"

@@ -1,5 +1,7 @@
 package com.xiziphus.monctl.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -38,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xiziphus.monctl.data.Config
 import com.xiziphus.monctl.data.Settings
+import com.xiziphus.monctl.net.BleTransport
 import com.xiziphus.monctl.net.MonctlClient
 import com.xiziphus.monctl.net.Reply
 import com.xiziphus.monctl.net.message
@@ -63,8 +66,19 @@ fun SettingsScreen(initial: Config, pairing: Config?, canGoBack: Boolean, onDone
     var showToken by remember { mutableStateOf(false) }
     var note by remember { mutableStateOf(if (pairing != null) "Loaded from a pairing link. Check it, then Save." else null) }
     var testing by remember { mutableStateOf(false) }
+    var ble by remember { mutableStateOf(initial.ble) }
 
-    fun current() = Config(lan, tunnel, token)
+    fun current() = Config(lan, tunnel, token, ble)
+
+    fun saveBle(on: Boolean) {
+        ble = on
+        scope.launch { Settings.setBle(ctx, on) }
+    }
+
+    val askBle = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
+        if (granted.values.all { it }) saveBle(true)
+        else note = "Bluetooth permission denied. Allow it in Android Settings → Apps → MonCtl → Permissions."
+    }
 
     Column(Modifier.fillMaxSize().background(c.bg).statusBarsPadding().navigationBarsPadding().imePadding()) {
         Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -112,6 +126,22 @@ fun SettingsScreen(initial: Config, pairing: Config?, canGoBack: Boolean, onDone
                         )
                     },
                 )
+            }
+
+            VSection("Bluetooth", value = if (ble) "on" else "off") {
+                VHint(
+                    "Last resort when neither the LAN nor the tunnel answers, e.g. the Mac is off Wi-Fi. " +
+                        "Needs `monctl ble on` on the Mac and the phone within about 10 m. No screen preview or updates over it."
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                    VButton(
+                        "On", modifier = Modifier.weight(1f), primary = !ble, enabled = !ble,
+                        onClick = {
+                            if (BleTransport.permitted(ctx)) saveBle(true) else askBle.launch(BleTransport.permissions)
+                        },
+                    )
+                    VButton("Off", { saveBle(false) }, Modifier.weight(1f), primary = ble, enabled = ble)
+                }
             }
 
             note?.let { VNotice(it, danger = false) }

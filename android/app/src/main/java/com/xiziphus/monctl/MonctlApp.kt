@@ -8,6 +8,7 @@ import com.xiziphus.monctl.net.MonctlClient
 class MonctlApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        MonctlClient.appContext = applicationContext
         // Walking out of Wi-Fi range (or back in) must not leave requests
         // pinned to the old route for the rest of the cache minute.
         getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(

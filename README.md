@@ -274,6 +274,40 @@ zoom. Limits:
   Grant it, then restart the server. macOS 15 also asks you to re-approve
   screen recording from time to time.
 
+**Bluetooth fallback.** For when neither the LAN nor the tunnel answers, for
+example because the Mac is off Wi-Fi. `ble/monctl-ble.swift` runs as its own
+background app (`~/Applications/MonCtlBLE.app`, built by `build.sh`). It
+advertises a BLE service and forwards each request to `server.py` on loopback.
+
+```text
+phone ──BLE──> monctl-ble ──http://127.0.0.1:8770──> server.py
+```
+
+- **Setup:** on the Mac run `monctl ble on` once. It installs the
+  `com.dell.monctl.ble` LaunchAgent; macOS asks to allow Bluetooth for "MonCtl
+  BLE". On the phone: **Settings → Bluetooth → On**, which asks for Bluetooth
+  permission. `monctl ble status` shows whether it's running, with the end of
+  `/tmp/monctl-ble.log`.
+- **Security comes from the token, not Bluetooth pairing.**
+  - Every message is sealed with AES-GCM, using a key derived from the token
+    (HKDF-SHA256). Without the token nothing can be read, forged or altered.
+  - Each connection starts with a random session nonce from the Mac, and each
+    request carries a counter that must increase. Both are bound into the seal,
+    so a recorded request can't be replayed.
+  - Only an allow-list of routes is forwarded: monitor, display, watcher, Mac,
+    Wi-Fi and AirPlay controls. Not the screen preview, which is too big for
+    BLE, and not the APK.
+- **When it's used:** after the LAN and the tunnel fail. Reads always fall
+  back. A write falls back only when the failure proves it never reached the
+  Mac: tunnel 530 ("origin not connected"), a refused connection, or no DNS. A
+  route that worked is kept for a minute, as with the others. The header and
+  the widget show `BLUETOOTH` / `BT`.
+- **Limits:**
+  - Range is about 10 m.
+  - The Mac must be awake with Bluetooth on, and `server.py` running.
+  - The first request takes 1–3 s to scan and connect. The link then stays
+    open for 30 s of quiet.
+
 **Limits:**
 
 - **On/Off is display wake/sleep.** Off is `pmset displaysleepnow`: the Mac

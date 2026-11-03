@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -23,6 +24,8 @@ data class Config(
     val lanUrl: String = "",
     val tunnelUrl: String = "",
     val token: String = "",
+    /** Fall back to Bluetooth LE (ble/monctl-ble on the Mac) when LAN and tunnel both fail. */
+    val ble: Boolean = false,
 ) {
     val isConfigured: Boolean
         get() = token.isNotBlank() && (lanUrl.isNotBlank() || tunnelUrl.isNotBlank())
@@ -34,11 +37,18 @@ object Settings {
     private val LAN = stringPreferencesKey("lan_url")
     private val TUNNEL = stringPreferencesKey("tunnel_url")
     private val TOKEN = stringPreferencesKey("token")
+    private val BLE = booleanPreferencesKey("ble")
 
     fun flow(context: Context): Flow<Config> =
         context.settingsStore.data.map {
-            Config(it[LAN].orEmpty(), it[TUNNEL].orEmpty(), it[TOKEN].orEmpty())
+            Config(it[LAN].orEmpty(), it[TUNNEL].orEmpty(), it[TOKEN].orEmpty(), it[BLE] ?: false)
         }
+
+    /** Its own switch in Settings, saved at once (after the permission prompt), not with Save. */
+    suspend fun setBle(context: Context, on: Boolean) {
+        context.settingsStore.edit { it[BLE] = on }
+        MonctlClient.forgetRoute()
+    }
 
     suspend fun load(context: Context): Config = flow(context).first()
 
@@ -56,6 +66,7 @@ object Settings {
         lanUrl = c.lanUrl.trim().trimEnd('/'),
         tunnelUrl = c.tunnelUrl.trim().trimEnd('/'),
         token = c.token.trim(),
+        ble = c.ble,
     )
 
     /** Null when usable, otherwise what to fix. */

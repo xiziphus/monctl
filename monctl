@@ -36,6 +36,7 @@
 #   monctl lid                             lid open/closed (auto-brightness gate)
 #   monctl autostart [on|off|status]       start the web panel at login
 #   monctl pair [https://tunnel-host]      pairing link (and QR) for the Android app
+#   monctl ble [on|off|status]             Bluetooth route for the Android app
 #   monctl auto [--dry-run]                auto-brightness from the light sensor
 #
 # The display drops its DDC bus while it sleeps, so a sleeping screen makes
@@ -435,6 +436,21 @@ case $cmd in
       fi
       print -u2 "Open it on the phone, or copy it and use Settings -> Paste pairing link."
       print -u2 "It contains the server token: don't paste it anywhere public." ;;
+  ble)                  # Bluetooth LE route for the Android app (ble/monctl-ble.swift)
+      local label=com.dell.monctl.ble dst=~/Library/LaunchAgents/com.dell.monctl.ble.plist
+      local bin=~/Applications/MonCtlBLE.app/Contents/MacOS/monctl-ble
+      case ${2-status} in
+        on)     [[ -x $bin ]] || { print -u2 "monctl: $bin missing -- run build.sh"; exit 1 }
+                sed "s|__BIN__|$bin|" "${0:A:h}/ble/com.dell.monctl.ble.plist" > $dst
+                launchctl bootout gui/$(id -u)/$label 2>/dev/null
+                launchctl bootstrap gui/$(id -u) $dst && print "bluetooth route: on (log: /tmp/monctl-ble.log)" ;;
+        off)    launchctl bootout gui/$(id -u)/$label 2>/dev/null; rm -f $dst
+                print "bluetooth route: off" ;;
+        status) if launchctl print gui/$(id -u)/$label >/dev/null 2>&1; then
+                  print "on"; tail -3 /tmp/monctl-ble.log 2>/dev/null
+                else print "off"; fi ;;
+        *)      print -u2 "usage: monctl ble [on|off|status]"; exit 1 ;;
+      esac ;;
   als)                  # current ambient light in lux
       "${ALSREAD:-$HOME/bin/alsread}" ;;
   auto)                 # drive backlight from the ambient light sensor

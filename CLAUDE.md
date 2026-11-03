@@ -19,6 +19,7 @@ monctl watch          # python3 watch.py
 monctl auto --dry-run # python3 autobright.py, decides but never writes
 monctl pair           # monctl://pair link (token + LAN + tunnel URL) for the Android app
 android/publish.sh    # build the app and publish it to the in-app update channel (~/.local/share/monctl/android)
+monctl ble on          # install/start the Bluetooth route (com.dell.monctl.ble -> ~/Applications/MonCtlBLE.app)
 cd android && ./gradlew assembleDebug && adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
@@ -41,6 +42,7 @@ autobright.py    ─┘ (+ alsread: ambient light sensor via private IOHIDEventS
 dimmer (C): software gamma-ramp dimming, no DDC
 
 android/ (Kotlin, Compose, Glance widget) ──LAN :8770 or Cloudflare tunnel──> webui/server.py
+                                          └─BLE──> ble/monctl-ble.swift ──loopback──┘
 ```
 
 - **`ddcprobe` is the single path to the hardware.** It holds an exclusive `flock` for its whole lifetime, because DDC has no transaction isolation: concurrent readers receive each other's replies as plausible-but-wrong values, not errors. Any new hardware access must go through `ddcprobe`. `server.py` also serializes its own calls with an in-process `BUS` lock. Subcommands: `caps`, `get`, `set`, `many` (batch read, one `code cur max` line per code), `scan`, `name`.
@@ -51,6 +53,7 @@ android/ (Kotlin, Compose, Glance widget) ──LAN :8770 or Cloudflare tunnel�
 - **Auth (`_gate` in server.py).** The token lives in `~/.config/monctl/token` (created on first start, never on a command line). Every GET except `/api/hello` and every POST is gated. Direct loopback is exempt, but a request carrying `Cf-Connecting-IP`/`Cf-Ray` is not: the Cloudflare tunnel (`~/.cloudflared/monctl.yml`, LaunchAgent `com.dell.monctl.tunnel`) connects from 127.0.0.1, so without that rule the internet would get loopback trust. Bad tokens lock a client out for 10 minutes. Keep new routes behind `_gate`.
 - **Android companion (`android/`).** It uses `/api/remote` (one-shot snapshot, never revives), `/api/nudge` (server-side relative step, may revive), `/api/set`, `/api/display` (On/Off = wake/sleep; "Power off completely" = hardoff, confirm-gated, app only) and `/api/watcher {action: start|stop}` (idempotent; stop = pause flag, start also kickstarts the agent). It checks `/api/hello` on the LAN URL before sending the token in cleartext, and falls back to the tunnel. URLs and token are entered on the phone (`monctl pair`); never hardcode them, since this repo is public.
 - **Mac controls and screen preview (`server.py`).** `/api/mac`, `/api/mac/*`, `/api/wifi/*` and `/api/airplay/*` mirror the MTMR Touch Bar by calling fixed `~/bin` scripts (`wifi_on.sh`, `wifi_join.sh`, `airplay_devices.sh`, `airplay_pick.sh`, `airplay_off.sh`) and `wifihelper`, with validated argv. Never run anything taken from the request or from MTMR's `items.json`, because these routes are reachable through the tunnel. `/api/screen` captures by display rectangle, never wakes an asleep display, and is refused through the tunnel unless `~/.config/monctl/screen_remote` exists.
+- **Bluetooth route (`ble/monctl-ble.swift`).** This is a transport only: it forwards an allow-list of routes to `server.py` on loopback, where they are exempt from the token, so the helper does its own auth. Messages are AES-GCM sealed with a key derived from the token, and a per-connection nonce plus an increasing counter block replays. `BleCrypto.kt` must stay byte-compatible with it. Keep new routes off `ALLOWED` unless they are small and safe to expose to anyone holding the token within radio range. On the phone, a POST falls back to BLE only when the earlier failure proves nothing was delivered (`Reply.Unreachable.unsent`).
 - **`monctl`** resolves helper binaries by script location first and then a hardcoded PATH. Shortcuts/Siri/launchd give it a bare PATH, and under `err_return` a failed lookup used to abort silently. Keep `_find`, and keep failures visible: ddcprobe stderr is passed through deliberately, and writes report refusal (`_wrote`, `_ddcw`) rather than printing success unconditionally.
 - **Writes are coalesced** in the UIs (about 100 ms in the Swift app, 130 ms in the web UI, one request in flight) because a DDC round-trip takes about 200 ms.
 - `watch.py` polls VCP `0x02` (the MCCS "new control value" latch), clears it, and diffs a watched set of controls. That is the only way to detect OSD button presses.

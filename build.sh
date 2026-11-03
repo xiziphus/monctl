@@ -36,6 +36,19 @@ swiftc -O -framework Cocoa -o "$APP/Contents/MacOS/MonCtl" "$SRC/MonCtl.swift"
 xattr -cr "$APP" 2>/dev/null || true
 codesign --force --deep --sign - "$APP" 2>/dev/null || echo "    (ad-hoc signing skipped)"
 
+echo "==> building MonCtlBLE.app (Bluetooth route for the Android app)"
+# Its own bundle, so macOS can grant it Bluetooth access. Run by the
+# com.dell.monctl.ble LaunchAgent once `monctl ble on` has installed it.
+BLEAPP=~/Applications/MonCtlBLE.app
+rm -rf "$BLEAPP"
+mkdir -p "$BLEAPP/Contents/MacOS"
+cp "$SRC/ble/Info.plist" "$BLEAPP/Contents/Info.plist"
+swiftc -O -framework CoreBluetooth -o "$BLEAPP/Contents/MacOS/monctl-ble" "$SRC/ble/monctl-ble.swift"
+xattr -cr "$BLEAPP" 2>/dev/null || true
+codesign --force --sign - "$BLEAPP" 2>/dev/null || echo "    (ad-hoc signing skipped)"
+launchctl print gui/$(id -u)/com.dell.monctl.ble >/dev/null 2>&1 \
+  && echo "    restart it: launchctl kickstart -k gui/$(id -u)/com.dell.monctl.ble"
+
 echo "==> building alsread (ambient light sensor)"
 clang -O2 -o "$SRC/alsread" "$SRC/alsread.c" -framework CoreFoundation -framework IOKit
 install -m 755 "$SRC/alsread" ~/bin/alsread
