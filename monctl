@@ -442,9 +442,11 @@ case $cmd in
       case ${2-status} in
         on)     [[ -x $bin ]] || { print -u2 "monctl: $bin missing -- run build.sh"; exit 1 }
                 sed "s|__BIN__|$bin|" "${0:A:h}/ble/com.dell.monctl.ble.plist" > $dst
-                launchctl bootout gui/$(id -u)/$label 2>/dev/null
+                # bootout exits 3 when the job isn't loaded (always, the first
+                # time), which under err_return silently ended the script here.
+                launchctl bootout gui/$(id -u)/$label 2>/dev/null || true
                 launchctl bootstrap gui/$(id -u) $dst && print "bluetooth route: on (log: /tmp/monctl-ble.log)" ;;
-        off)    launchctl bootout gui/$(id -u)/$label 2>/dev/null; rm -f $dst
+        off)    launchctl bootout gui/$(id -u)/$label 2>/dev/null || true; rm -f $dst
                 print "bluetooth route: off" ;;
         status) if launchctl print gui/$(id -u)/$label >/dev/null 2>&1; then
                   print "on"; tail -3 /tmp/monctl-ble.log 2>/dev/null
