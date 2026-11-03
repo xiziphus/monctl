@@ -444,14 +444,26 @@ def watcher_config_set(changes):
     return cfg, None
 
 
+_WATCH_TEST: dict = {"proc": None}
+
+
 def watcher_test():
-    """Play one announcement the way the watcher would, with the saved settings."""
+    """Play one announcement the way the watcher would, with the saved settings.
+
+    A tap while the last one is still playing is ignored: two copies of the
+    same sentence a second apart sound like the voice stuttering. `wait` keeps
+    bash alive until cue's backgrounded playback ends, so poll() means "done".
+    """
     if not os.access(WATCH_CUE, os.R_OK):
         return False
+    prev = _WATCH_TEST["proc"]
+    if prev is not None and prev.poll() is None:
+        return True
     try:
-        subprocess.Popen(["/bin/bash", "-c",
-                          '. "$HOME/bin/airplay_cue.sh" && load_watch_conf && cue Tink "wifi still down."'],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _WATCH_TEST["proc"] = subprocess.Popen(
+            ["/bin/bash", "-c",
+             '. "$HOME/bin/airplay_cue.sh" && load_watch_conf && cue Tink "wifi still down."; wait'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True
     except OSError:
         return False

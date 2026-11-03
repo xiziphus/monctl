@@ -36,9 +36,11 @@
   <string>/tmp/monctl-web.log</string>
   <key>StandardErrorPath</key>
   <string>/tmp/monctl-web.log</string>
+  <!-- Standard, not Background: children inherit the darwin-background
+       throttle, and `say`/`afplay` started from here (the watcher's test
+       announcement, the toggle cues) came out garbled under it. The server is
+       idle almost all the time, so this costs nothing noticeable. -->
   <key>ProcessType</key>
-  <string>Background</string>
-  <key>LowPriorityIO</key>
-  <true/>
+  <string>Standard</string>
 </dict>
 </plist>
