@@ -35,6 +35,7 @@
 #   monctl als                             ambient light in lux
 #   monctl lid                             lid open/closed (auto-brightness gate)
 #   monctl autostart [on|off|status]       start the web panel at login
+#   monctl pair [https://tunnel-host]      pairing link (and QR) for the Android app
 #   monctl auto [--dry-run]                auto-brightness from the light sensor
 #
 # The display drops its DDC bus while it sleeps, so a sleeping screen makes
@@ -410,6 +411,30 @@ case $cmd in
                       && print enabled || print "not installed"; } ;;
         *)      print -u2 "usage: monctl autostart [on|off|status]"; exit 1 ;;
       esac ;;
+  pair)                 # monctl://pair link for the Android app
+      # The token, the LAN address and the tunnel hostname are never in the
+      # (public) repo: they come from the token file, the current Wi-Fi
+      # address and the cloudflared config, and only ever leave this Mac in
+      # this link, which is shown here and nowhere else.
+      local tokfile=~/.config/monctl/token lan tunnel link
+      [[ -r $tokfile ]] || { print -u2 "monctl: no $tokfile yet -- start the web server once (monctl web)"; exit 1 }
+      lan=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)
+      tunnel=${2-}
+      if [[ -z $tunnel && -r ~/.cloudflared/monctl.yml ]]; then
+        tunnel=$(awk '/hostname:/ {print $NF; exit}' ~/.cloudflared/monctl.yml)
+        [[ -n $tunnel ]] && tunnel=https://$tunnel
+      fi
+      link="monctl://pair?k=$(<$tokfile)"
+      [[ -n $lan ]] && link+="&lan=http://$lan:8770"
+      [[ -n $tunnel ]] && link+="&tunnel=$tunnel"
+      print -- "$link"
+      if command -v qrencode >/dev/null; then
+        qrencode -t ansiutf8 -- "$link"
+      else
+        print -u2 "(brew install qrencode to get a QR code here)"
+      fi
+      print -u2 "Open it on the phone, or copy it and use Settings -> Paste pairing link."
+      print -u2 "It contains the server token: don't paste it anywhere public." ;;
   als)                  # current ambient light in lux
       "${ALSREAD:-$HOME/bin/alsread}" ;;
   auto)                 # drive backlight from the ambient light sensor

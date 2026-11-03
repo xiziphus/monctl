@@ -108,8 +108,13 @@ monctl web 9000       # different port
 A browser panel replicating the monitor's OSD menu: Picture, Colour, Six-axis,
 Audio, System, Restore, Information, plus a capabilities viewer. 38 controls.
 
-- **Binds to 127.0.0.1 only.** It drives display hardware; it is deliberately
-  not reachable from the network.
+- **Token-guarded beyond loopback.** It binds 127.0.0.1 unless started with
+  `--lan` (the LaunchAgent does). Every request other than direct loopback
+  needs the token from `~/.config/monctl/token` (created on first start), as
+  `?k=` once in a browser (a cookie carries it after that) or as the
+  `X-Monctl-Token` header. Requests arriving through the Cloudflare tunnel come
+  from 127.0.0.1 too; they carry `Cf-*` headers, and those are never treated as
+  local. Ten bad tokens from one client lock it out for 10 minutes.
 - **Readings stream in one at a time.** `GET /api/stream` is Server-Sent Events:
   the server runs `ddcprobe many` under `Popen` and emits a `value` event per
   line as the probe yields it, rather than waiting for the whole batch. Each
@@ -167,6 +172,65 @@ Two upstream fixes were needed after install:
   `@/lib/utils`.
 
 Files: `webui/server.py` (stdlib only) and `app/` (the React build).
+
+## Android companion
+
+`android/` is a Kotlin/Compose app with a home-screen widget: sleep/wake,
+brightness, volume, mute and input (DisplayPort, HDMI 1, HDMI 2). It talks to
+`server.py` on the LAN when the phone is on home Wi-Fi and through a
+Cloudflare tunnel otherwise.
+
+```text
+phone ──LAN (http, :8770)──────────────────────────────┐
+     └─https://<tunnel host>──Cloudflare──cloudflared──┴─> server.py ─> ddcprobe ─> monitor
+```
+
+**Mac side, once:**
+
+1. The web server's LaunchAgent (`monctl autostart on`) runs it with `--lan` on
+   port 8770 and creates `~/.config/monctl/token`.
+2. Tunnel: `cloudflared tunnel create monctl`, `cloudflared tunnel route dns
+   monctl <host>`, and a `~/.cloudflared/monctl.yml` sending `<host>` to
+   `http://127.0.0.1:8770`, run by its own LaunchAgent. None of this is in the repo.
+3. `monctl pair` prints a `monctl://pair?...` link (and a QR code if
+   `qrencode` is installed) holding the LAN URL, tunnel URL and token. Open it
+   on the phone, or copy it and use **Settings → Paste pairing link**.
+
+**Build and install** (needs the Android SDK, platform 35, and JDK 17):
+
+```bash
+cd android
+./gradlew assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+**How it picks a route.** Before sending the token in cleartext to the LAN
+address, the app asks it `GET /api/hello` (unauthenticated) with a 700 ms
+budget, because another Wi-Fi network can have a different device at the same
+private IP. If that fails it uses the tunnel. The choice is cached for a minute
+and dropped on any network change. Only reads fall back to the other route
+after a failure: a timed-out write may still have reached the Mac.
+
+**Endpoints it uses:** `GET /api/remote` (power state plus brightness, volume,
+mute and input in one call; never wakes the display), `POST /api/nudge
+{code, delta}` (a relative step computed against the live value, which is what
+the widget's −/+ buttons send since its cached state can be 15 minutes old),
+`POST /api/set` and `POST /api/display`.
+
+**Limits:**
+
+- **Power is sleep/wake only.** `pmset displaysleepnow` / `caffeinate -u` is
+  the one reversible pair. VCP `D6=4` ("off") and `D6=5` ("hardoff") kill the
+  panel's DDC bus, so nothing can turn it back on remotely; the app never sends
+  them. If the monitor was switched off at its button, the app says "not
+  answering DDC".
+- **The Mac has to be awake.** On AC this Mac is set to `sleep 0`, so the
+  display can sleep while the server stays reachable. On battery, remote
+  control stops when the Mac sleeps.
+- Input switches are confirmed in the app and in the widget (a one-tap dialog),
+  as in every other front end.
+- The widget refreshes after each tap, when the app is opened, and every
+  15 minutes (WorkManager's minimum) while there's a network.
 
 ## Detecting OSD button presses
 

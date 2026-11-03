@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MonCtl</string>
+    <string name="widget_name">Monitor</string>
+    <string name="widget_description">Power, brightness, volume and input for the monitor</string>
+</resources>

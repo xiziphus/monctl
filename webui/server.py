@@ -764,6 +764,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path)
 
+        # Unauthenticated identity check. The Android app calls this on the LAN
+        # address before sending its token in cleartext: another Wi-Fi network
+        # can have a different device at the same private IP.
+        if u.path == "/api/hello":
+            return self._send(200, {"monctl": 1})
+
         if self._gate():
             return
 

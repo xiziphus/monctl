@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The LAN leg is plain HTTP to the Mac, and its address is entered at runtime,
+     so it cannot be pinned here. Instead Settings.validate() only accepts a
+     cleartext LAN URL for a private address or a .local/.lan name, the tunnel
+     URL must be https, and MonctlClient checks /api/hello before sending the
+     token to the LAN address. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>
