@@ -47,7 +47,8 @@ import com.xiziphus.monctl.ui.MainActivity
  * Three layouts, picked by the space the launcher gives:
  *   SMALL  (2x1)  power, brightness -/+
  *   STRIP  (4x1)  power, brightness -/+, volume -/+
- *   FULL   (4x2)  status line; power; brightness, volume, mute; input chips
+ *   FULL   (4x2)  status line + AirPlay watcher toggle; power; brightness,
+ *                 volume, mute; input chips
  */
 class MonctlWidget : GlanceAppWidget() {
     companion object {
@@ -89,6 +90,17 @@ private fun Content(context: Context, st: WidgetStore.State) {
                     maxLines = 1,
                     modifier = GlanceModifier.defaultWeight().clickable(actionStartActivity<MainActivity>()),
                 )
+                s?.watcher?.takeIf { it.installed }?.let { w ->
+                    Text(
+                        if (w.active) "AirPlay ●" else "AirPlay ○",
+                        style = TextStyle(
+                            color = if (w.active) GlanceTheme.colors.primary else GlanceTheme.colors.onSurfaceVariant,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
+                        ),
+                        modifier = GlanceModifier.padding(horizontal = 6.dp).clickable(actionRunCallback<WatcherAction>()),
+                    )
+                }
                 Text(
                     "⟳",
                     style = TextStyle(color = GlanceTheme.colors.onSurfaceVariant, fontSize = 16.sp),

@@ -176,7 +176,8 @@ Files: `webui/server.py` (stdlib only) and `app/` (the React build).
 ## Android companion
 
 `android/` is a Kotlin/Compose app with a home-screen widget: sleep/wake,
-brightness, volume, mute and input (DisplayPort, HDMI 1, HDMI 2). It talks to
+brightness, volume, mute, input (DisplayPort, HDMI 1, HDMI 2), and start/stop
+for the AirPlay-display watcher. It talks to
 `server.py` on the LAN when the phone is on home Wi-Fi and through a
 Cloudflare tunnel otherwise.
 
@@ -215,7 +216,11 @@ after a failure: a timed-out write may still have reached the Mac.
 mute and input in one call; never wakes the display), `POST /api/nudge
 {code, delta}` (a relative step computed against the live value, which is what
 the widget's −/+ buttons send since its cached state can be 15 minutes old),
-`POST /api/set` and `POST /api/display`.
+`POST /api/set`, `POST /api/display`, and `POST /api/watcher {action:
+"start"|"stop"}`. Stop sets the watcher's pause flag (its LaunchAgent is
+`KeepAlive`, so killing it would only respawn it); start clears it and
+kickstarts `com.dell.airplaywatch` if the process has died. Both are
+idempotent, unlike the body-less toggle the other front ends use.
 
 **Limits:**
 

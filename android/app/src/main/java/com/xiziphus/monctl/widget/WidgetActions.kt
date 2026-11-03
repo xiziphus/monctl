@@ -54,6 +54,15 @@ object WidgetActions {
         r
     }
 
+    suspend fun toggleWatcher(context: Context) = run(context) { cfg ->
+        // Explicit start/stop decided from the cached state; the server call is
+        // idempotent, so a stale cache costs a no-op, never a wrong flip.
+        val active = WidgetStore.load(context).snapshot?.watcher?.active == true
+        val r = MonctlClient.watcher(cfg, start = !active)
+        if (r is Reply.Ok) WidgetStore.patch(context, r.route) { it.copy(watcher = r.value) }
+        r
+    }
+
     suspend fun refresh(context: Context) = run(context) { cfg ->
         MonctlClient.remote(cfg).also { WidgetStore.publish(context, it) }
     }
@@ -88,6 +97,12 @@ class MuteAction : ActionCallback {
 class PowerAction : ActionCallback {
     override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
         WidgetActions.power(context)
+    }
+}
+
+class WatcherAction : ActionCallback {
+    override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
+        WidgetActions.toggleWatcher(context)
     }
 }
 

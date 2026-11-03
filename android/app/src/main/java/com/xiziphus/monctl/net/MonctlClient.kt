@@ -104,6 +104,12 @@ object MonctlClient {
             json.decodeFromString<DisplayReply>(it)
         }
 
+    /** Start or stop the AirPlay watcher. Idempotent, unlike the web panel's toggle. */
+    suspend fun watcher(cfg: Config, start: Boolean): Reply<WatcherState> =
+        call(cfg, post("/api/watcher", buildJsonObject { put("action", if (start) "start" else "stop") })) {
+            json.decodeFromString<WatcherState>(it)
+        }
+
     /** Settings' "Test" button: try each configured route on its own, uncached. */
     suspend fun test(cfg: Config): List<Pair<Route, Reply<DisplayReply>>> = withContext(Dispatchers.IO) {
         buildList {

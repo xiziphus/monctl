@@ -27,6 +27,7 @@ data class Snapshot(
     val volume: Level? = null,
     val muted: Boolean? = null,
     val input: Int? = null,
+    val watcher: WatcherState? = null,
 ) {
     val inputOptions: List<InputOption>
         get() = inputs.mapNotNull { pair ->
@@ -58,6 +59,19 @@ data class InputOption(val code: Int, val name: String) {
             InputOption(18, "HDMI 2"),
         )
     }
+}
+
+/**
+ * The AirPlay-display watcher (~/bin/airplay_watch.sh). "Stopped" is its pause
+ * flag: the process is KeepAlive'd by launchd and keeps running, idle.
+ */
+@Serializable
+data class WatcherState(
+    val installed: Boolean = false,
+    val paused: Boolean = false,
+    val running: Boolean = false,
+) {
+    val active: Boolean get() = running && !paused
 }
 
 @Serializable

@@ -315,6 +315,30 @@ def watcher_toggle():
         return False
 
 
+WATCH_AGENT = "com.dell.airplaywatch"
+
+
+def watcher_set(want_on):
+    """Explicit start/stop for remote callers, where a blind toggle could act
+    on a stale view and flip the wrong way.
+
+    Stop = the pause flag, via airplay_toggle.sh so the usual sound plays. The
+    process itself is left alone: its LaunchAgent has KeepAlive, so killing it
+    would only respawn it. Start = clear the pause, and kickstart the agent if
+    the process has died.
+    """
+    st = watcher_state()
+    if not st["installed"]:
+        return False
+    if want_on and not st["running"]:
+        _lc("kickstart", f"gui/{_uid()}/{WATCH_AGENT}")
+    if st["paused"] == want_on:          # paused and want on, or running and want off
+        if not watcher_toggle():
+            return False
+        time.sleep(0.35)                 # toggle writes the flag, then plays a sound
+    return True
+
+
 def write_one(code, value):
     if not re.fullmatch(r"[0-9A-Fa-f]{2}", code):
         return False
@@ -354,7 +378,8 @@ def remote_snapshot():
     st = display_power_state()
     asleep = st is not None and st < 4
     out = {"asleep": asleep, "reachable": False, "inputs": REMOTE_INPUTS,
-           "brightness": None, "volume": None, "muted": None, "input": None}
+           "brightness": None, "volume": None, "muted": None, "input": None,
+           "watcher": watcher_state()}
     if asleep:
         return out
     v = read_many(["10", "62", "8D", "60"])
@@ -1025,11 +1050,23 @@ class Handler(BaseHTTPRequestHandler):
                                     "asleep": (st is not None and st < 4)})
 
         if u.path == "/api/watcher":
-            if not watcher_toggle():
+            # {"action": "start"|"stop"} is idempotent (the Android app). No
+            # body keeps the original blind toggle for the Touch Bar-style use.
+            try:
+                action = self._body().get("action")
+            except (ValueError, json.JSONDecodeError):
+                return self._send(400, {"error": "bad json"})
+            if action not in (None, "start", "stop"):
+                return self._send(400, {"error": "action must be start|stop"})
+            if action is None:
+                ok = watcher_toggle()
+                # The script writes the flag then plays a sound; re-read after
+                # a beat or the response reports the state we just left.
+                time.sleep(0.35)
+            else:
+                ok = watcher_set(action == "start")
+            if not ok:
                 return self._send(503, {"error": "airplay_toggle.sh not installed"})
-            # The script writes the flag then plays a sound; re-read after a beat
-            # or the response reports the state we just left.
-            time.sleep(0.35)
             return self._send(200, watcher_state())
 
         if u.path != "/api/set":

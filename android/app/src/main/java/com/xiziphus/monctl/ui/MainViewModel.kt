@@ -105,6 +105,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         r
     }
 
+    fun setWatcher(start: Boolean) = act { cfg ->
+        val r = MonctlClient.watcher(cfg, start)
+        if (r is Reply.Ok) _ui.update { s -> s.copy(snapshot = s.snapshot?.copy(watcher = r.value)) }
+        r
+    }
+
     private fun act(block: suspend (Config) -> Reply<*>) {
         val cfg = _ui.value.config ?: return
         viewModelScope.launch {

@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import com.xiziphus.monctl.net.InputOption
 import com.xiziphus.monctl.net.Level
 import com.xiziphus.monctl.net.Snapshot
+import com.xiziphus.monctl.net.WatcherState
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -87,6 +88,8 @@ fun MainScreen(ui: UiState, vm: MainViewModel, onSettings: () -> Unit) {
                             "(or with 'off' / 'hardoff' from the web panel), only the physical button turns it back on."
                     )
                 }
+                // On the Mac, not the monitor: shown whatever state the panel is in.
+                s?.watcher?.takeIf { it.installed }?.let { WatcherCard(it, enabled = !ui.working, onSet = vm::setWatcher) }
             }
         }
     }
@@ -187,6 +190,31 @@ private fun InputCard(s: Snapshot, enabled: Boolean, onPick: (InputOption) -> Un
                 } else {
                     FilledTonalButton(onClick = { onPick(opt) }, enabled = enabled, modifier = mod) { Text(opt.name, maxLines = 1) }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WatcherCard(w: WatcherState, enabled: Boolean, onSet: (Boolean) -> Unit) {
+    val status = when {
+        !w.running -> "Not running"
+        w.paused -> "Stopped"
+        else -> "Running"
+    }
+    SectionCard("AirPlay watcher", value = status) {
+        Text(
+            "Keeps the AirPlay display connected and announces Wi-Fi drops.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+            if (w.active) {
+                Button(onClick = { onSet(false) }, enabled = enabled, modifier = Modifier.weight(1f)) { Text("Stop") }
+                OutlinedButton(onClick = { onSet(true) }, enabled = false, modifier = Modifier.weight(1f)) { Text("Start") }
+            } else {
+                OutlinedButton(onClick = { onSet(false) }, enabled = false, modifier = Modifier.weight(1f)) { Text("Stop") }
+                Button(onClick = { onSet(true) }, enabled = enabled, modifier = Modifier.weight(1f)) { Text("Start") }
             }
         }
     }
