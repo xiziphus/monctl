@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -20,9 +22,28 @@ android {
         versionName = "0.2.$stamp"
     }
 
+    // The release key lives outside the repo (~/.config/monctl/release.*).
+    // Without it the release build is left unsigned rather than falling back
+    // to the debug key, so a lost key can't ship an APK nobody can update.
+    val relProps = Properties().apply {
+        val f = file(System.getProperty("user.home") + "/.config/monctl/release.properties")
+        if (f.exists()) f.inputStream().use { load(it) }
+    }
+    signingConfigs {
+        if (relProps.getProperty("storeFile") != null) {
+            create("release") {
+                storeFile = file(relProps.getProperty("storeFile"))
+                storePassword = relProps.getProperty("storePassword")
+                keyAlias = relProps.getProperty("keyAlias")
+                keyPassword = relProps.getProperty("keyPassword")
+            }
+        }
+    }
     buildTypes {
         release {
             isMinifyEnabled = false
+            isDebuggable = false
+            signingConfigs.findByName("release")?.let { signingConfig = it }
         }
     }
     compileOptions {

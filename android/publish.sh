@@ -3,12 +3,13 @@
 # (~/.local/share/monctl/android). Phones running MonCtl pick it up the next
 # time the app is opened.
 #
-# Signed with this Mac's debug key (~/.android/debug.keystore). Keep that
-# file: an APK signed with any other key cannot update the installed app.
+# A release build (not debuggable), signed with ~/.config/monctl/release.keystore
+# (settings in release.properties, both outside the repo). Back that key up:
+# an APK signed with any other key cannot update the installed app.
 set -euo pipefail
 cd "$(dirname "$0")"
-./gradlew -q assembleDebug
-python3 - app/build/outputs/apk/debug "$HOME/.local/share/monctl/android" <<'PY'
+./gradlew -q assembleRelease
+python3 - app/build/outputs/apk/release "$HOME/.local/share/monctl/android" <<'PY'
 import hashlib, json, os, shutil, sys
 out, chan = sys.argv[1], sys.argv[2]
 meta = json.load(open(os.path.join(out, "output-metadata.json")))["elements"][0]

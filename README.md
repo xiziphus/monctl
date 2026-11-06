@@ -186,11 +186,21 @@ cd android && ./gradlew assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-`android/publish.sh` builds the app and publishes it to the in-app update
-channel (`~/.local/share/monctl/android`). The app checks on every open, verifies
-the SHA-256, and installs through `PackageInstaller`. Builds are signed with
-`~/.android/debug.keystore`. Keep that file: an APK signed with another key cannot
-update the installed app.
+**Install and updates.** Tagged builds are attached to
+[GitHub Releases](https://github.com/xiziphus/monctl/releases) with a changelog
+(`android/release.sh`). `android/publish.sh` publishes the same signed build to
+the in-app update channel (`~/.local/share/monctl/android`). The app checks on
+every open, verifies the SHA-256, and installs through `PackageInstaller`.
+
+Builds are release builds, signed with a key kept outside the repo
+(`~/.config/monctl/release.keystore`, settings in `release.properties`). Back it
+up: an APK signed with another key cannot update the installed app.
+
+**Play Protect.** Android shows "unknown developer" or "app blocked" for apps
+that don't come from Google Play. This app is distributed outside it, so the
+warning stays. Tap **More details > Install anyway**, or turn off
+"Scan apps with Play Protect" for the install. I can't mark an APK safe from
+outside: that status comes only from Play.
 
 On the phone, the app tries the LAN address first, after a 700 ms unauthenticated
 `/api/hello` check so it does not send the token in cleartext to a stranger's
