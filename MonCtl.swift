@@ -370,6 +370,369 @@ enum Watcher {
     }
 }
 
+// MARK: - Window placement
+
+/// "Show windows in screen": moves another app's windows to a chosen screen
+/// through the Accessibility API, for when an app opens on the laptop panel
+/// and that panel can't be seen. It was asked for as a Dock right-click item,
+/// but the Dock's menu belongs to the Dock process and can only be extended
+/// by injecting code into it, which needs SIP off -- so it lives here.
+enum Screens {
+    static func id(_ s: NSScreen) -> CGDirectDisplayID {
+        (s.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
+    }
+
+    /// Stable across replugs, unlike NSScreen identity or the display ID.
+    static func key(_ s: NSScreen) -> String {
+        let d = id(s)
+        return "\(CGDisplayVendorNumber(d)):\(CGDisplayModelNumber(d)):\(CGDisplaySerialNumber(d))"
+    }
+
+    static func screen(forKey k: String) -> NSScreen? { NSScreen.screens.first { key($0) == k } }
+
+    /// A mirror set is one NSScreen, named after its master. Say when the
+    /// built-in panel is hiding inside one, or "the laptop screen" goes missing
+    /// from the list for no visible reason.
+    static func label(_ s: NSScreen) -> String {
+        let d = id(s)
+        if CGDisplayIsBuiltin(d) != 0 { return "\(s.localizedName) (built-in)" }
+        var ids = [CGDirectDisplayID](repeating: 0, count: 16)
+        var n: UInt32 = 0
+        CGGetOnlineDisplayList(16, &ids, &n)
+        let hidesBuiltin = ids.prefix(Int(n)).contains {
+            CGDisplayMirrorsDisplay($0) == d && CGDisplayIsBuiltin($0) != 0
+        }
+        return hidesBuiltin ? "\(s.localizedName) + built-in (mirrored)" : s.localizedName
+    }
+
+    /// AX speaks top-left-origin global coordinates, AppKit bottom-left; both
+    /// are anchored to the primary screen.
+    static func axRect(_ r: NSRect) -> CGRect {
+        let h = NSScreen.screens.first?.frame.height ?? 0
+        return CGRect(x: r.minX, y: h - r.maxY, width: r.width, height: r.height)
+    }
+
+    /// The screen holding most of `r` (AX coordinates), nil if none does.
+    static func holding(_ r: CGRect) -> NSScreen? {
+        var best: (screen: NSScreen, area: CGFloat)?
+        for s in NSScreen.screens {
+            let i = axRect(s.frame).intersection(r)
+            let a = i.isNull ? 0 : i.width * i.height
+            if a > (best?.area ?? 0) { best = (s, a) }
+        }
+        return best?.screen
+    }
+}
+
+enum Windows {
+    static var trusted: Bool { AXIsProcessTrusted() }
+
+    /// The prompt call is also what puts MonCtl into the Accessibility list.
+    static func askForTrust() {
+        let opt = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+        _ = AXIsProcessTrustedWithOptions([opt: true] as CFDictionary)
+        NSWorkspace.shared.open(URL(string:
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+    }
+
+    /// A hung app otherwise stalls the menu for AX's default 6 s per call.
+    static func limitTimeouts() { AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 1.0) }
+
+    private static func attr(_ e: AXUIElement, _ name: String) -> CFTypeRef? {
+        var v: CFTypeRef?
+        return AXUIElementCopyAttributeValue(e, name as CFString, &v) == .success ? v : nil
+    }
+
+    @discardableResult
+    private static func set(_ e: AXUIElement, _ name: String, _ v: CFTypeRef) -> Bool {
+        AXUIElementSetAttributeValue(e, name as CFString, v) == .success
+    }
+
+    /// Only windows on the current Space(s): that is all AX reports for most apps.
+    static func windows(_ pid: pid_t) -> [AXUIElement] {
+        (attr(AXUIElementCreateApplication(pid), kAXWindowsAttribute) as? [AXUIElement] ?? [])
+            .filter(movable)
+    }
+
+    /// Standard windows and dialogs that can actually be moved: not
+    /// minimised, not a fullscreen Space of their own.
+    static func movable(_ w: AXUIElement) -> Bool {
+        let sub = attr(w, kAXSubroleAttribute) as? String
+        guard sub == kAXStandardWindowSubrole || sub == kAXDialogSubrole else { return false }
+        if attr(w, kAXMinimizedAttribute) as? Bool == true { return false }
+        if attr(w, "AXFullScreen") as? Bool == true { return false }
+        return true
+    }
+
+    static func frame(_ w: AXUIElement) -> CGRect? {
+        guard let p = attr(w, kAXPositionAttribute), let s = attr(w, kAXSizeAttribute) else { return nil }
+        var pt = CGPoint.zero, sz = CGSize.zero
+        guard AXValueGetValue(p as! AXValue, .cgPoint, &pt),
+              AXValueGetValue(s as! AXValue, .cgSize, &sz) else { return nil }
+        return CGRect(origin: pt, size: sz)
+    }
+
+    static func screensUsed(_ pid: pid_t) -> Set<String> {
+        Set(windows(pid).compactMap { frame($0).flatMap(Screens.holding).map(Screens.key) })
+    }
+
+    /// Keeps the window's relative place on screen, shrinking it only if the
+    /// target is smaller. A window that is on no screen at all is centred.
+    static func move(_ w: AXUIElement, to target: NSScreen) {
+        guard let f = frame(w) else { return }
+        var pid: pid_t = 0
+        AXUIElementGetPid(w, &pid)
+        // Chrome and Electron apps animate AX moves and drop resizes while
+        // this is on; Rectangle and friends switch it off for the move too.
+        let owner = AXUIElementCreateApplication(pid)
+        let enhanced = attr(owner, "AXEnhancedUserInterface") as? Bool == true
+        if enhanced { set(owner, "AXEnhancedUserInterface", kCFBooleanFalse) }
+        defer { if enhanced { set(owner, "AXEnhancedUserInterface", kCFBooleanTrue) } }
+
+        let dst = Screens.axRect(target.visibleFrame)
+        var size = CGSize(width: min(f.width, dst.width), height: min(f.height, dst.height))
+        var rx: CGFloat = 0.5, ry: CGFloat = 0.5
+        if let from = Screens.holding(f) {
+            let src = Screens.axRect(from.visibleFrame)
+            func frac(_ off: CGFloat, _ room: CGFloat) -> CGFloat { room > 0 ? max(0, min(1, off / room)) : 0.5 }
+            rx = frac(f.minX - src.minX, src.width - f.width)
+            ry = frac(f.minY - src.minY, src.height - f.height)
+        }
+        var origin = CGPoint(x: dst.minX + (dst.width - size.width) * rx,
+                             y: dst.minY + (dst.height - size.height) * ry)
+        // Position, size, position: some apps clamp a resize against the
+        // screen they are still on, so the size only sticks after the move.
+        set(w, kAXPositionAttribute, AXValueCreate(.cgPoint, &origin)!)
+        if size != f.size { set(w, kAXSizeAttribute, AXValueCreate(.cgSize, &size)!) }
+        set(w, kAXPositionAttribute, AXValueCreate(.cgPoint, &origin)!)
+    }
+
+    @discardableResult
+    static func moveAll(_ pid: pid_t, to target: NSScreen) -> Int {
+        let ws = windows(pid)
+        ws.forEach { move($0, to: target) }
+        return ws.count
+    }
+}
+
+private func windowCreated(_ obs: AXObserver, _ w: AXUIElement, _ note: CFString,
+                           _ refcon: UnsafeMutableRawPointer?) {
+    guard let refcon else { return }
+    Unmanaged<WindowPlacer>.fromOpaque(refcon).takeUnretainedValue().placeSoon(w)
+}
+
+/// The default screen: windows that open anywhere else are moved onto it, so
+/// an app that comes up on the dead laptop panel doesn't stay there. Only NEW
+/// windows -- one dragged elsewhere afterwards is left where it was put.
+final class WindowPlacer {
+    static let shared = WindowPlacer()
+    private let keyPref = "defaultScreen", namePref = "defaultScreenName"
+    private var observers: [pid_t: AXObserver] = [:]
+
+    var defaultKey: String? { UserDefaults.standard.string(forKey: keyPref) }
+    var defaultName: String? { UserDefaults.standard.string(forKey: namePref) }
+
+    func setDefault(_ s: NSScreen?) {
+        UserDefaults.standard.set(s.map(Screens.key), forKey: keyPref)
+        UserDefaults.standard.set(s.map(Screens.label), forKey: namePref)
+        sync()
+    }
+
+    func start() {
+        let nc = NSWorkspace.shared.notificationCenter
+        nc.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil,
+                       queue: .main) { [weak self] n in
+            guard let self,
+                  let app = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            else { return }
+            self.attach(app)
+            // Windows that opened before the observer was in place, and a
+            // second go at attaching to an app that wasn't answering AX yet.
+            for t in [0.8, 2.5] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + t) { self.sweep(app) }
+            }
+        }
+        nc.addObserver(forName: NSWorkspace.didTerminateApplicationNotification, object: nil,
+                       queue: .main) { [weak self] n in
+            guard let app = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  let obs = self?.observers.removeValue(forKey: app.processIdentifier) else { return }
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(obs), .commonModes)
+        }
+        sync()
+    }
+
+    /// Attached to every app while a default is set and access is granted,
+    /// to none otherwise. Cheap enough to run on every menu open, which is how
+    /// an Accessibility grant made after launch gets picked up.
+    func sync() {
+        guard defaultKey != nil, Windows.trusted else {
+            for obs in observers.values {
+                CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(obs), .commonModes)
+            }
+            observers.removeAll()
+            return
+        }
+        NSWorkspace.shared.runningApplications.forEach(attach)
+    }
+
+    private func attach(_ app: NSRunningApplication) {
+        let pid = app.processIdentifier
+        guard defaultKey != nil, Windows.trusted, observers[pid] == nil,
+              app.activationPolicy == .regular, pid != getpid() else { return }
+        var made: AXObserver?
+        guard AXObserverCreate(pid, windowCreated, &made) == .success, let obs = made,
+              AXObserverAddNotification(obs, AXUIElementCreateApplication(pid),
+                                        kAXWindowCreatedNotification as CFString,
+                                        Unmanaged.passUnretained(self).toOpaque()) == .success
+        else { return }
+        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(obs), .commonModes)
+        observers[pid] = obs
+    }
+
+    private func sweep(_ app: NSRunningApplication) {
+        attach(app)
+        Windows.windows(app.processIdentifier).forEach(place)
+    }
+
+    /// Apps often create a window first and position it a moment later.
+    func placeSoon(_ w: AXUIElement) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { self.place(w) }
+    }
+
+    private func place(_ w: AXUIElement) {
+        guard let k = defaultKey, let target = Screens.screen(forKey: k),
+              Windows.movable(w), let f = Windows.frame(w),
+              Screens.holding(f).map(Screens.key) != k else { return }
+        Windows.move(w, to: target)
+    }
+}
+
+/// Show windows in screen ▸ <app> ▸ <screen>, with the screens the app has
+/// windows on ticked, and Default screen ▸ at the bottom. Rebuilt on open.
+final class WindowMenu: NSObject, NSMenuDelegate {
+    let item = NSMenuItem(title: "Show windows in screen", action: nil, keyEquivalent: "")
+    private let root = NSMenu()
+
+    private final class AppMenu: NSMenu { var pid: pid_t = 0 }
+
+    override init() {
+        super.init()
+        root.delegate = self
+        item.submenu = root
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        if let m = menu as? AppMenu { fillApp(m) } else if menu === root { fillRoot() }
+    }
+
+    private func fillRoot() {
+        root.removeAllItems()
+        WindowPlacer.shared.sync()
+        if !Windows.trusted {
+            let ask = NSMenuItem(title: "Allow Accessibility access…",
+                                 action: #selector(askTrust), keyEquivalent: "")
+            ask.target = self
+            ask.toolTip = "Moving another app's windows needs MonCtl switched on under "
+                + "System Settings › Privacy & Security › Accessibility."
+            root.addItem(ask)
+            root.addItem(.separator())
+        }
+        let apps = NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular && $0.processIdentifier != getpid() }
+            .sorted { ($0.localizedName ?? "").localizedCaseInsensitiveCompare($1.localizedName ?? "")
+                == .orderedAscending }
+        // The app that just opened somewhere unseen is nearly always the
+        // frontmost one, so it goes first.
+        if let front = NSWorkspace.shared.frontmostApplication, apps.contains(front) {
+            root.addItem(appItem(front))
+            root.addItem(.separator())
+            apps.filter { $0 != front }.forEach { root.addItem(appItem($0)) }
+        } else {
+            apps.forEach { root.addItem(appItem($0)) }
+        }
+        root.addItem(.separator())
+        root.addItem(defaultItem())
+    }
+
+    private func appItem(_ app: NSRunningApplication) -> NSMenuItem {
+        let it = NSMenuItem(title: app.localizedName ?? "pid \(app.processIdentifier)",
+                            action: nil, keyEquivalent: "")
+        if let icon = app.icon?.copy() as? NSImage {
+            icon.size = NSSize(width: 16, height: 16)
+            it.image = icon
+        }
+        let sub = AppMenu()
+        sub.pid = app.processIdentifier
+        sub.delegate = self
+        it.submenu = sub
+        return it
+    }
+
+    private func fillApp(_ m: AppMenu) {
+        m.removeAllItems()
+        let used = Windows.trusted ? Windows.screensUsed(m.pid) : []
+        if Windows.trusted && used.isEmpty {
+            m.addItem(NSMenuItem(title: "No windows on this desktop", action: nil, keyEquivalent: ""))
+            m.addItem(.separator())
+        }
+        for s in NSScreen.screens {
+            let it = NSMenuItem(title: Screens.label(s), action: #selector(show(_:)), keyEquivalent: "")
+            it.target = self
+            it.representedObject = (m.pid, Screens.key(s))
+            it.state = used.contains(Screens.key(s)) ? .on : .off
+            m.addItem(it)
+        }
+    }
+
+    private func defaultItem() -> NSMenuItem {
+        let placer = WindowPlacer.shared
+        let current = placer.defaultKey.flatMap(Screens.screen(forKey:))
+        let it = NSMenuItem(title: "Default screen: "
+                            + (current.map(Screens.label) ?? placer.defaultName ?? "None"),
+                            action: nil, keyEquivalent: "")
+        it.toolTip = "New windows that open on any other screen are moved here."
+        let sub = NSMenu()
+        let none = NSMenuItem(title: "None", action: #selector(pickDefault(_:)), keyEquivalent: "")
+        none.target = self
+        none.representedObject = ""
+        none.state = placer.defaultKey == nil ? .on : .off
+        sub.addItem(none)
+        sub.addItem(.separator())
+        if let name = placer.defaultName, current == nil, placer.defaultKey != nil {
+            let gone = NSMenuItem(title: "\(name) (not connected)", action: nil, keyEquivalent: "")
+            gone.state = .on
+            sub.addItem(gone)
+        }
+        for s in NSScreen.screens {
+            let opt = NSMenuItem(title: Screens.label(s), action: #selector(pickDefault(_:)), keyEquivalent: "")
+            opt.target = self
+            opt.representedObject = Screens.key(s)
+            opt.state = Screens.key(s) == placer.defaultKey ? .on : .off
+            sub.addItem(opt)
+        }
+        it.submenu = sub
+        return it
+    }
+
+    @objc private func askTrust() { Windows.askForTrust() }
+
+    @objc private func show(_ sender: NSMenuItem) {
+        guard let (pid, key) = sender.representedObject as? (pid_t, String) else { return }
+        guard Windows.trusted else { Windows.askForTrust(); return }
+        guard let target = Screens.screen(forKey: key),
+              let app = NSRunningApplication(processIdentifier: pid) else { return }
+        if app.isHidden { app.unhide() }
+        Windows.moveAll(pid, to: target)
+        app.activate(options: [.activateAllWindows])
+    }
+
+    @objc private func pickDefault(_ sender: NSMenuItem) {
+        let key = sender.representedObject as? String ?? ""
+        WindowPlacer.shared.setDefault(key.isEmpty ? nil : Screens.screen(forKey: key))
+        if !key.isEmpty && !Windows.trusted { Windows.askForTrust() }
+    }
+}
+
 // MARK: - Slider row
 
 final class SliderRow: NSView {
@@ -505,6 +868,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let powerOffItem = NSMenuItem(title: "Power off monitor…",
                                           action: #selector(hardOffDisplay), keyEquivalent: "")
     private var currentSource = -1
+    private let windowMenu = WindowMenu()
 
     func applicationDidFinishLaunching(_ n: Notification) {
         guard FileManager.default.isExecutableFile(atPath: DDCPROBE) else {
@@ -570,6 +934,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let refreshItem = NSMenuItem(title: "Refresh from display", action: #selector(refresh), keyEquivalent: "r")
         refreshItem.target = self
         menu.addItem(refreshItem)
+
+        menu.addItem(.separator())
+        menu.addItem(windowMenu.item)
+        Windows.limitTimeouts()
+        WindowPlacer.shared.start()
 
         // Kept below a separator, away from the sliders: a misclick on either of
         // these has a visible consequence, unlike nudging brightness.
