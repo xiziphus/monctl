@@ -128,6 +128,8 @@ do, otherwise a poller would keep a dark monitor lit.
 
 ## Web panel
 
+![Web panel](docs/img/web-panel.png)
+
 `monctl web` serves `webui/index.html`, a single file with no build step. It
 has brightness, volume, mute, input, power, auto-brightness, the screen preview
 and a collapsed Advanced section generated from `/api/catalog`. To expose another
