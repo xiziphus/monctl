@@ -25,6 +25,9 @@ object Updater {
     val installedCode: Long get() = BuildConfig.VERSION_CODE.toLong()
     val installedName: String get() = BuildConfig.VERSION_NAME
 
+    /** The update channel serves the release APK, which a debug build (another package, another key) cannot install. */
+    val enabled: Boolean get() = !BuildConfig.DEBUG
+
     fun canInstall(context: Context): Boolean = context.packageManager.canRequestPackageInstalls()
 
     /** The system screen where the user allows MonCtl to install apps. */

@@ -196,6 +196,12 @@ Builds are release builds, signed with a key kept outside the repo
 (`~/.config/monctl/release.keystore`, settings in `release.properties`). Back it
 up: an APK signed with another key cannot update the installed app.
 
+**Debug and release are two apps.** The release build is `com.xiziphus.monctl`
+("MonCtl"). The debug build is `com.xiziphus.monctl.debug` ("MonCtl Debug"),
+signed with Android's debug key, so both install side by side. The debug build
+does not offer updates, because the update channel serves the release APK.
+`./gradlew installDebug` puts the debug app on a connected phone.
+
 **Play Protect.** Android shows "unknown developer" or "app blocked" for apps
 that don't come from Google Play. This app is distributed outside it, so the
 warning stays. Tap **More details > Install anyway**, or turn off

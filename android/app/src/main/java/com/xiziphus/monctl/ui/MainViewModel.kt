@@ -174,7 +174,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun checkForUpdate(cfg: Config) {
         val r = MonctlClient.appVersion(cfg)
         if (r is Reply.Ok) {
-            _ui.update { it.copy(update = r.value.takeIf { v -> v.versionCode > Updater.installedCode }) }
+            _ui.update { it.copy(update = r.value.takeIf { v -> Updater.enabled && v.versionCode > Updater.installedCode }) }
         }
     }
 
@@ -414,7 +414,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             when (val r = MonctlClient.appVersion(cfg)) {
                 is Reply.Ok -> {
-                    val newer = r.value.takeIf { v -> v.versionCode > Updater.installedCode }
+                    val newer = r.value.takeIf { v -> Updater.enabled && v.versionCode > Updater.installedCode }
                     _ui.update { it.copy(update = newer) }
                     toast(if (newer == null) "Up to date" else "Update ${newer.versionName} is ready")
                 }

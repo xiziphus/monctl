@@ -40,6 +40,12 @@ android {
         }
     }
     buildTypes {
+        // A separate app, so a debug build installs beside the release one:
+        // different package, different name, and its own debug signing key.
+        debug {
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+        }
         release {
             isMinifyEnabled = false
             isDebuggable = false
