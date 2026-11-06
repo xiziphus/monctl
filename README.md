@@ -166,6 +166,8 @@ It controls the monitor (power, brightness, volume, mute, input) and the Mac
 (volume, built-in brightness, Wi-Fi, AirPlay, the AirPlay-display watcher), and
 shows the screen preview.
 
+<img src="docs/img/android-app.png" width="320" alt="MonCtl Android app">
+
 Setup on the Mac, once:
 
 1. `monctl autostart on` runs the server at login with `--lan` and creates the

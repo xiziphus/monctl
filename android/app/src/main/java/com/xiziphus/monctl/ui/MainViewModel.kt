@@ -146,7 +146,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val pick = keep ?: (list.firstOrNull { !it.builtin } ?: list.firstOrNull())?.id
                 _ui.update { it.copy(displays = list, screenId = pick) }
                 if (!d.value.permission) {
-                    _ui.update { it.copy(thumb = null, screenNote = "Allow Screen Recording for the server on the Mac.") }
+                    _ui.update { it.copy(thumb = null, screenNote = "Allow Screen Recording for MonCtlShot on the Mac.") }
                 } else if (pick != null) {
                     loadThumb(cfg, pick)
                 }
