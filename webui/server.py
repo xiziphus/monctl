@@ -15,7 +15,9 @@ import os
 import re
 import secrets
 import socket
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import webbrowser
@@ -869,19 +871,23 @@ def mac_snapshot():
 #
 # A JPEG of one display, for the phone to poll about once a second. Viewing is
 # a background read in the sleeping-bus sense: an asleep display is reported,
-# never woken. Through the tunnel it is refused unless SCREEN_REMOTE_FLAG
-# exists -- the screen is the most private thing this server can hand out.
+# never woken. It is served over the tunnel too (the LAN address changes with
+# DHCP, so the tunnel is the route that is actually used); the token gate is the
+# protection, and every request is written to SCREEN_LOG.
 #
 # Capture is by global rectangle (screencapture -R), not -D <n>: the -D index
 # reshuffles whenever the AirPlay display comes and goes. Mirrored displays
 # (the Pad mirrors the built-in) are folded into the display they mirror.
-# Needs Screen Recording permission for the process running this server.
+# Capture is done by ~/Applications/MonCtlShot.app (shot/monctl-shot.swift); only
+# that bundle needs Screen Recording permission, not this Python.
 # ---------------------------------------------------------------------------
 
-SCREEN_REMOTE_FLAG = os.path.expanduser("~/.config/monctl/screen_remote")
+SCREEN_LOG = os.path.expanduser("~/.local/share/monctl/screen.log")
+SCREEN_LOG_MAX = 5 * 1024 * 1024
+SCREEN_LOG_LOCK = threading.Lock()
+SCREEN_SEEN = {}      # (peer, display) -> last preview time, to collapse the 1 fps stream
 SCREEN = threading.Lock()
 SCREEN_CACHE = {"key": None, "t": 0.0, "jpg": None}
-SCREEN_ASKED = {"done": False}
 
 
 class _CGPoint(ctypes.Structure):
@@ -905,8 +911,6 @@ _cg.CGDisplayIsAsleep.argtypes = [ctypes.c_uint32]
 _cg.CGDisplayVendorNumber.argtypes = [ctypes.c_uint32]
 _cg.CGDisplayVendorNumber.restype = ctypes.c_uint32
 _cg.CGDisplayIsMain.argtypes = [ctypes.c_uint32]
-_cg.CGPreflightScreenCaptureAccess.restype = ctypes.c_bool
-_cg.CGRequestScreenCaptureAccess.restype = ctypes.c_bool
 
 VENDORS = {0x0472: "Acer", 0x0610: "Apple", 0x6161706C: "AirPlay"}
 
@@ -947,47 +951,97 @@ def screen_displays():
     return out
 
 
-def screen_capture(display_id, width):
-    """(status, jpeg bytes or error dict)."""
-    if not _cg.CGPreflightScreenCaptureAccess():
-        if not SCREEN_ASKED["done"]:
-            SCREEN_ASKED["done"] = True     # macOS shows its prompt once per process
-            _cg.CGRequestScreenCaptureAccess()
-        return 403, {"error": "Screen Recording permission is off for the monctl server "
-                              "(System Settings > Privacy & Security > Screen & System Audio "
-                              "Recording: allow python3, then restart the server)",
-                     "permission": False}
+def screen_log(**rec):
+    """Append one JSON line. Never raises: logging must not break a capture."""
+    rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), **rec}
+    try:
+        with SCREEN_LOG_LOCK:
+            os.makedirs(os.path.dirname(SCREEN_LOG), exist_ok=True)
+            try:
+                if os.path.getsize(SCREEN_LOG) > SCREEN_LOG_MAX:
+                    os.replace(SCREEN_LOG, SCREEN_LOG + ".1")
+            except OSError:
+                pass
+            fd = os.open(SCREEN_LOG, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            with os.fdopen(fd, "a") as f:
+                f.write(json.dumps(rec) + "\n")
+    except OSError:
+        pass
+
+
+SHOT_APP = os.path.expanduser("~/Applications/MonCtlShot.app")
+SCREEN_PERM = {"ok": True}      # False once the helper reports it lacks permission
+
+
+def _shot(display_id, width, fmt):
+    """Run MonCtlShot.app for one frame: (status, image bytes or error dict).
+
+    Screen Recording is granted to that bundle alone, not to this Python. It is
+    started through `open` so that it is its own responsible process; `open`
+    cannot return its exit status, so the helper signals through the filesystem
+    (<out> on success, <out>.err on failure)."""
+    pre = _screen_precheck(display_id)
+    if isinstance(pre, tuple):
+        return pre
+    if not os.path.isdir(SHOT_APP):
+        return 502, {"error": "MonCtlShot.app is not installed (run ./build.sh)"}
+    d = tempfile.mkdtemp(prefix="monctl-shot-")     # 0700
+    out = os.path.join(d, "shot." + fmt)
+    try:
+        if _run(["/usr/bin/open", "-n", "-a", SHOT_APP, "--args",
+                 str(display_id), out, str(width), fmt], timeout=10) is None:
+            return 502, {"error": "could not start MonCtlShot"}
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if os.path.exists(out):
+                with open(out, "rb") as f:
+                    SCREEN_PERM["ok"] = True
+                    return 200, f.read()
+            if os.path.exists(out + ".err"):
+                with open(out + ".err") as f:
+                    why = f.read().strip()
+                if why == "permission":
+                    SCREEN_PERM["ok"] = False
+                    return 403, {"error": "Screen Recording permission is off for MonCtlShot "
+                                          "(System Settings > Privacy & Security > Screen & "
+                                          "System Audio Recording: add ~/Applications/MonCtlShot.app)",
+                                 "permission": False}
+                return 502, {"error": why or "capture failed"}
+            time.sleep(0.05)
+        return 502, {"error": "capture timed out"}
+    except OSError as e:
+        return 502, {"error": str(e)}
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def _screen_precheck(display_id):
+    """The display dict, or a (status, error dict) tuple."""
     disp = next((d for d in screen_displays() if d["id"] == display_id), None)
     if disp is None:
         return 404, {"error": "no such display"}
     st = display_power_state()
     if disp["asleep"] or (st is not None and st < 4):
         return 409, {"error": "display asleep", "asleep": True}
+    return disp
+
+
+def screen_capture_full(display_id):
+    """Native-resolution PNG of one display."""
+    with SCREEN:
+        return _shot(display_id, 0, "png")
+
+
+def screen_capture(display_id, width):
+    """JPEG scaled to `width`, with a 0.5 s cache so two viewers share a capture."""
     key = (display_id, width)
     with SCREEN:
         if SCREEN_CACHE["key"] == key and time.monotonic() - SCREEN_CACHE["t"] < 0.5:
             return 200, SCREEN_CACHE["jpg"]
-        tmp = f"/tmp/monctl-screen-{os.getpid()}"
-        rect = f"{disp['x']},{disp['y']},{disp['w']},{disp['h']}"
-        try:
-            if _run(["/usr/sbin/screencapture", "-x", "-R", rect, "-t", "jpg", tmp + "-full.jpg"],
-                    timeout=10) is None:
-                return 502, {"error": "capture failed"}
-            if _run(["/usr/bin/sips", "-Z", str(width), "-s", "formatOptions", "60",
-                     tmp + "-full.jpg", "--out", tmp + ".jpg"], timeout=10) is None:
-                return 502, {"error": "resize failed"}
-            with open(tmp + ".jpg", "rb") as f:
-                jpg = f.read()
-        except OSError as e:
-            return 502, {"error": str(e)}
-        finally:
-            for p in (tmp + "-full.jpg", tmp + ".jpg"):
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
-        SCREEN_CACHE.update(key=key, t=time.monotonic(), jpg=jpg)
-        return 200, jpg
+        status, body = _shot(display_id, width, "jpg")
+        if status == 200:
+            SCREEN_CACHE.update(key=key, t=time.monotonic(), jpg=body)
+        return status, body
 
 
 # ---------------------------------------------------------------------------
@@ -1316,6 +1370,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for k, v in getattr(self, "_extra", ()):
+            self.send_header(k, v)
+        self._extra = ()
         # Hand out the cookie on any request that proved itself via ?k=, so the
         # assets and API calls that follow need no query string.
         if self._query_token_ok():
@@ -1361,19 +1418,41 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, mac_snapshot())
 
         if u.path.startswith("/api/screen"):
-            if self._via_tunnel() and not os.path.exists(SCREEN_REMOTE_FLAG):
-                return self._send(403, {"error": "screen preview is LAN-only", "lan_only": True})
+            via = "tunnel" if self._via_tunnel() else ("local" if self.client_address[0] in ("127.0.0.1", "::1") else "lan")
+            who = {"peer": self._peer(), "via": via,
+                   "ua": (self.headers.get("User-Agent") or "")[:120]}
             if u.path == "/api/screen/displays":
                 return self._send(200, {"displays": screen_displays(),
-                                        "permission": bool(_cg.CGPreflightScreenCaptureAccess())})
+                                        "permission": SCREEN_PERM["ok"]})
             if u.path == "/api/screen":
                 q = parse_qs(u.query)
+                full = q.get("full", ["0"])[0] == "1"
                 try:
                     d = int(q.get("d", ["0"])[0])
                     w = max(320, min(3840, int(q.get("w", ["1280"])[0])))
                 except ValueError:
                     return self._send(400, {"error": "d and w must be integers"})
+                if full:
+                    status, body = screen_capture_full(d)
+                    ok = status == 200
+                    screen_log(kind="download", display=d, status=status,
+                               bytes=len(body) if ok else 0,
+                               **({} if ok else {"error": body.get("error")}), **who)
+                    if not ok:
+                        return self._send(status, body)
+                    name = time.strftime("monctl-screen-%Y%m%d-%H%M%S.png")
+                    self._extra = [("Content-Disposition", f'attachment; filename="{name}"')]
+                    return self._send(200, body, "image/png")
                 status, body = screen_capture(d, w)
+                # The phone polls about once a second; log a stream once, when it
+                # starts or resumes after a minute of silence, and every failure.
+                now = time.monotonic()
+                key = (who["peer"], d)
+                fresh = now - SCREEN_SEEN.get(key, -1e9) > 60
+                SCREEN_SEEN[key] = now
+                if fresh or status != 200:
+                    screen_log(kind="preview", display=d, w=w, status=status,
+                               **({"error": body.get("error")} if status != 200 else {}), **who)
                 if status == 200:
                     return self._send(200, body, "image/jpeg")
                 return self._send(status, body)

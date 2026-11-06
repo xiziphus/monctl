@@ -99,6 +99,16 @@ details.group > summary { font-weight: 600; color: var(--fg); }
   </section>
 
   <section>
+    <details id="scr">
+      <summary>Screen preview</summary>
+      <div class="row" id="scrPick" style="margin:10px 0"></div>
+      <img id="scrImg" alt="" style="width:100%;border-radius:10px;display:none;background:#000">
+      <div class="status" id="scrStatus"></div>
+      <button id="scrShot" style="width:100%;margin-top:10px">Download full-resolution screenshot</button>
+    </details>
+  </section>
+
+  <section>
     <details id="adv">
       <summary>Advanced</summary>
       <div id="advBody" class="muted">Loading…</div>
@@ -274,6 +284,57 @@ function renderCtl(c, v) {
 
 /* ---- boot ------------------------------------------------------------ */
 refresh(); refreshAuto();
+/* ---- screen preview: ~1 frame/s, only while the section is open and the tab visible ---- */
+let scrId = null, scrTimer = null, scrBusy = false;
+async function scrLoadDisplays() {
+  const d = await jget("/api/screen/displays");
+  if (!d.permission) { $("scrStatus").textContent = "Screen Recording is off for the server on the Mac."; }
+  $("scrPick").innerHTML = "";
+  for (const x of d.displays) {
+    const b = document.createElement("button");
+    b.textContent = x.name + (x.mirrored_on ? " +" + x.mirrored_on : "");
+    b.classList.toggle("on", x.id === scrId);
+    b.onclick = () => { scrId = x.id; scrLoadDisplays().catch(fail); scrFrame(); };
+    $("scrPick").appendChild(b);
+  }
+  if (scrId === null || !d.displays.some(x => x.id === scrId)) {
+    const m = d.displays.find(x => x.main) || d.displays[0];
+    if (m) { scrId = m.id; scrLoadDisplays().catch(fail); }
+  }
+}
+async function scrFrame() {
+  if (scrBusy || scrId === null || document.hidden || !$("scr").open) return;
+  scrBusy = true;
+  try {
+    const r = await fetch(api("/api/screen?d=" + scrId + "&w=1280"));
+    if (r.ok) {
+      const u = URL.createObjectURL(await r.blob()), img = $("scrImg"), old = img.src;
+      img.src = u; img.style.display = "block"; $("scrStatus").textContent = "";
+      if (old.startsWith("blob:")) URL.revokeObjectURL(old);
+    } else {
+      $("scrStatus").textContent = (await r.json().catch(() => ({}))).error || "HTTP " + r.status;
+    }
+  } catch (e) { $("scrStatus").textContent = String(e.message || e); }
+  scrBusy = false;
+}
+$("scr").addEventListener("toggle", () => {
+  clearInterval(scrTimer);
+  if ($("scr").open) { scrLoadDisplays().then(scrFrame).catch(fail); scrTimer = setInterval(scrFrame, 1000); }
+});
+$("scrShot").onclick = async () => {
+  if (scrId === null) return;
+  $("scrStatus").textContent = "Capturing full resolution…";
+  try {
+    const r = await fetch(api("/api/screen?full=1&d=" + scrId));
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "HTTP " + r.status);
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(await r.blob());
+    a.download = (/filename="([^"]+)"/.exec(r.headers.get("Content-Disposition") || "") || [])[1] || "monctl-screen.png";
+    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    $("scrStatus").textContent = "Saved " + a.download;
+  } catch (e) { $("scrStatus").textContent = String(e.message || e); }
+};
+
 setInterval(refresh, 20000); setInterval(refreshAuto, 15000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) { refresh(); refreshAuto(); } });
 </script>

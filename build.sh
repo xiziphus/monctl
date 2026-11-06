@@ -49,6 +49,17 @@ codesign --force --sign - "$BLEAPP" 2>/dev/null || echo "    (ad-hoc signing ski
 launchctl print gui/$(id -u)/com.dell.monctl.ble >/dev/null 2>&1 \
   && echo "    restart it: launchctl kickstart -k gui/$(id -u)/com.dell.monctl.ble"
 
+echo "==> building MonCtlShot.app (screen capture for the preview)"
+# Its own bundle so Screen Recording can be granted to it alone, not to the
+# Python that runs server.py. See shot/monctl-shot.swift.
+SHOTAPP=~/Applications/MonCtlShot.app
+rm -rf "$SHOTAPP"
+mkdir -p "$SHOTAPP/Contents/MacOS"
+cp "$SRC/shot/Info.plist" "$SHOTAPP/Contents/Info.plist"
+swiftc -O -o "$SHOTAPP/Contents/MacOS/monctl-shot" "$SRC/shot/monctl-shot.swift"
+xattr -cr "$SHOTAPP" 2>/dev/null || true
+codesign --force --sign - "$SHOTAPP" 2>/dev/null || echo "    (ad-hoc signing skipped)"
+
 echo "==> building alsread (ambient light sensor)"
 clang -O2 -o "$SRC/alsread" "$SRC/alsread.c" -framework CoreFoundation -framework IOKit
 install -m 755 "$SRC/alsread" ~/bin/alsread

@@ -223,7 +223,7 @@ object MonctlClient {
     suspend fun airplayDisconnect(cfg: Config): Reply<Unit> =
         call(cfg, post("/api/airplay/disconnect", buildJsonObject { }), slow = true) { }
 
-    // --- screen preview (LAN-only unless the Mac opts the tunnel in) --------
+    // --- screen preview (LAN or tunnel; token-gated and logged server-side) --
 
     suspend fun screenDisplays(cfg: Config): Reply<DisplayList> =
         call(cfg, get("/api/screen/displays"), retryable = true) { json.decodeFromString<DisplayList>(it) }
@@ -231,6 +231,10 @@ object MonctlClient {
     /** One JPEG frame of display [id], scaled to [width] px. */
     suspend fun screen(cfg: Config, id: Long, width: Int): Reply<ByteArray> =
         callRaw(cfg, get("/api/screen?d=$id&w=$width"), retryable = false, slow = false) { it }
+
+    /** Native-resolution PNG of display [id]; the server logs each of these. */
+    suspend fun screenFull(cfg: Config, id: Long): Reply<ByteArray> =
+        callRaw(cfg, get("/api/screen?d=$id&full=1"), retryable = false, slow = true) { it }
 
     /** Settings' "Test" button: try each configured route on its own, uncached. */
     suspend fun test(cfg: Config): List<Pair<Route, Reply<DisplayReply>>> = withContext(Dispatchers.IO) {

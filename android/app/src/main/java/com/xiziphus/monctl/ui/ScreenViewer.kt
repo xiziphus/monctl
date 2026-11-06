@@ -1,6 +1,14 @@
 package com.xiziphus.monctl.ui
 
+import android.content.ContentValues
+import android.os.Build
+import android.os.Environment
 import android.os.SystemClock
+import android.provider.MediaStore
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -85,6 +93,9 @@ fun ScreenViewer(cfg: Config, displays: List<ScreenDisplay>, startId: Long, onCl
     val density = LocalDensity.current.density
     val width = (maxOf(conf.screenWidthDp, conf.screenHeightDp) * density).toInt().coerceIn(720, 1920)
     val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
+    var saving by remember { mutableStateOf(false) }
     val clock = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
 
     LaunchedEffect(id) {
@@ -140,6 +151,23 @@ fun ScreenViewer(cfg: Config, displays: List<ScreenDisplay>, startId: Long, onCl
                     }
                 }
                 Text(
+                    if (saving) "SAVING…" else "SAVE",
+                    style = LabelMono, color = Color(0xFFEDEDED),
+                    modifier = Modifier.clickable(enabled = !saving) {
+                        saving = true
+                        note = "Capturing full resolution…"
+                        scope.launch {
+                            val r = MonctlClient.screenFull(cfg, id)
+                            note = when (r) {
+                                is Reply.Ok -> saveShot(ctx, r.value)?.let { "Saved to Pictures/MonCtl as $it" }
+                                    ?: "Couldn't save the screenshot."
+                                else -> r.message()
+                            }
+                            saving = false
+                        }
+                    }.padding(horizontal = 8.dp, vertical = 12.dp),
+                )
+                Text(
                     "✕", fontSize = 16.sp, color = Color(0xFFEDEDED),
                     modifier = Modifier.clickable(onClick = onClose).padding(horizontal = 14.dp, vertical = 10.dp),
                 )
@@ -171,5 +199,25 @@ fun ScreenViewer(cfg: Config, displays: List<ScreenDisplay>, startId: Long, onCl
                 }
             }
         }
+    }
+}
+
+/** Writes [png] to Pictures/MonCtl through MediaStore; returns the file name, or null. */
+private suspend fun saveShot(ctx: android.content.Context, png: ByteArray): String? = withContext(Dispatchers.IO) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return@withContext null
+    val name = "monctl-" + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date()) + ".png"
+    val values = ContentValues().apply {
+        put(MediaStore.Images.Media.DISPLAY_NAME, name)
+        put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+        put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/MonCtl")
+    }
+    val uri = ctx.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+        ?: return@withContext null
+    try {
+        ctx.contentResolver.openOutputStream(uri)?.use { it.write(png) } ?: return@withContext null
+        name
+    } catch (e: java.io.IOException) {
+        ctx.contentResolver.delete(uri, null, null)
+        null
     }
 }
