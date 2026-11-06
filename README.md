@@ -9,6 +9,24 @@ them, and Apple Silicon is not supported (the I2C path is Intel-only).
 macOS has no brightness slider for external displays. DDC/CI is the channel
 that carries those commands, over the DisplayPort AUX lines in the cable.
 
+## Why this exists
+
+I broke my MacBook's screen, so the Acer is my only display. It has several
+inputs (the Mac on DisplayPort, a PS4 on HDMI) and its on-screen menu is slow, so
+switching input or brightness by hand was a chore. `monctl` started as a way to
+do that from the Mac.
+
+The Android app came from playing the PS4 from bed. To check the Mac, or switch
+the monitor back, I had to get up and walk to it. Now the phone does it. The
+tunnel is the main route because my home LAN address changes with DHCP. The
+Bluetooth route is for trips: when I take the laptop and an Android tablet
+somewhere with no Wi-Fi, or a phone hotspot doesn't auto-connect, I can still
+control the Mac from within about 10 m. It is not a remote route. From anywhere
+else, the tunnel is the only way in.
+
+The AirPlay-display watcher exists for the same broken screen. It keeps a
+usable display up when the laptop panel can't, and speaks when something drops.
+
 ## What you get
 
 | Front end | Where | Use it for |
@@ -176,7 +194,9 @@ device on the same private IP. It then falls back to the tunnel, and last to
 Bluetooth. Reads fall back freely. A write falls back only if the failure proves
 nothing was delivered.
 
-**Bluetooth route.** `monctl ble on` installs `MonCtlBLE.app` as a LaunchAgent.
+**Bluetooth route.** Short range (about 10 m), for when there is no network.
+Its main use is telling the Mac to join a hotspot, after which the tunnel and
+the preview work again. `monctl ble on` installs `MonCtlBLE.app` as a LaunchAgent.
 It advertises a BLE service and forwards an allow-list of routes to the server on
 loopback. Messages are AES-GCM sealed with a key derived from the token; a
 per-connection nonce and a rising counter stop replays. It excludes the screen
