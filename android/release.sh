@@ -10,7 +10,7 @@ cd "$(dirname "$0")"
 DRY=0; [[ ${1-} == --dry-run ]] && DRY=1
 
 if [[ $DRY == 0 ]]; then
-  [[ -z $(git status --porcelain) ]] || { echo "release: commit or stash first" >&2; exit 1; }
+  [[ -z $(git status --porcelain --untracked-files=no) ]] || { echo "release: commit or stash first" >&2; exit 1; }
   git fetch -q origin
   [[ $(git rev-parse HEAD) == $(git rev-parse origin/main) ]] || { echo "release: push main first" >&2; exit 1; }
 fi
